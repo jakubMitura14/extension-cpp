@@ -6,10 +6,7 @@
 
 std::vector<torch::Tensor> lltm_cuda_forward(
     torch::Tensor input,
-    torch::Tensor weights,
-    torch::Tensor bias,
-    torch::Tensor old_h,
-    torch::Tensor old_cell);
+    torch::Tensor output);
 
 // C++ interface
 
@@ -20,20 +17,16 @@ std::vector<torch::Tensor> lltm_cuda_forward(
 
 std::vector<torch::Tensor> lltm_forward(
     torch::Tensor input,
-    torch::Tensor weights,
-    torch::Tensor bias,
-    torch::Tensor old_h,
-    torch::Tensor old_cell) {
-    CHECK_INPUT(input);
-    CHECK_INPUT(weights);
-    CHECK_INPUT(bias);
-    CHECK_INPUT(old_h);
-    CHECK_INPUT(old_cell);
+    torch::Tensor output) {
 
-    return lltm_cuda_forward(input, weights, bias, old_h, old_cell);
+    CHECK_INPUT(input);
+    CHECK_INPUT(output);
+
+
+    return lltm_cuda_forward(input, output);
 }
 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("forward", &lltm_forward, "LLTM forward (CUDA)");
+    m.def("forwardB", &lltm_forward, "LLTM forward (CUDA)");
 }
