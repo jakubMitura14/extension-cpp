@@ -94,13 +94,15 @@ def benchmarkMitura():
         {"image": image_name, "label": label_name}
         for image_name, label_name in zip(train_images, train_labels)
     ]
-    data_dicts
+    check_ds = Dataset(data=data_dicts, transform=val_transforms)
+    check_loader = DataLoader(check_ds, batch_size=1)
 
     for dat in check_loader:
+        print("**********************   \n  ")
         pass
 
 
-
+benchmarkMitura()
 
 
 
