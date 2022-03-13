@@ -2544,7 +2544,8 @@ T FindMax(T* arr, size_t n)
 
 
 
-void benchmarkMitura(bool* onlyBladderBoolFlat, bool* onlyLungsBoolFlat, const int WIDTH, const int HEIGHT, const int DEPTH, cudaStream_t stream1) {
+void benchmarkMitura(bool* onlyBladderBoolFlat, bool* onlyLungsBoolFlat, const int WIDTH, const int HEIGHT
+    , const int DEPTH, cudaStream_t stream1) {
 
 
 
