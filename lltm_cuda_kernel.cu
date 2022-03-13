@@ -9,12 +9,12 @@ namespace {
 
     template <typename scalar_t>
     __global__ void lltm_cuda_forward_kernel(
-        const torch::PackedTensorAccessor<scalar_t, 1, torch::RestrictPtrTraits, size_t> input,
-        const torch::PackedTensorAccessor<scalar_t, 1, torch::RestrictPtrTraits, size_t> output) {
+        torch::PackedTensorAccessor<scalar_t, 1, torch::RestrictPtrTraits, size_t> input,
+        torch::PackedTensorAccessor<scalar_t, 1, torch::RestrictPtrTraits, size_t> output) {
         //batch index
         // column index
         const int c = blockIdx.x * blockDim.x + threadIdx.x;
-
+        output[c] = input[c]*2;
     }
 
 } // namespace
