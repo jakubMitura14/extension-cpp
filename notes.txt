@@ -1,0 +1,7 @@
+
+
+
+
+// python C:\Users\jakub\source\repos\extension-cpp\setup.py install
+// python C:\Users\jakub\source\repos\extension-cpp\jit.py
+
