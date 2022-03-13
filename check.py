@@ -69,6 +69,38 @@ def benchmarkMitura():
     ])
 
 
+    data_dir = "D:\\dataSets\\CTORGmini\\"
+
+    train_images = sorted(
+        glob.glob(os.path.join(data_dir, "volumes 0-49", "*.nii.gz")))
+
+    train_labels = sorted(
+        glob.glob(os.path.join(data_dir, "labels", "*.nii.gz")))
+
+    data_dicts = [
+        {"image": image_name, "label": label_name}
+        for image_name, label_name in zip(train_images, train_labels)
+    ]
+    data_dicts
+    data_dir = "D:\\dataSets\\CTORGmini\\"
+
+    train_images = sorted(
+        glob.glob(os.path.join(data_dir, "volumes 0-49", "*.nii.gz")))
+
+    train_labels = sorted(
+        glob.glob(os.path.join(data_dir, "labels", "*.nii.gz")))
+
+    data_dicts = [
+        {"image": image_name, "label": label_name}
+        for image_name, label_name in zip(train_images, train_labels)
+    ]
+    data_dicts
+
+    for dat in check_loader:
+        pass
+
+
+
 
 
 
