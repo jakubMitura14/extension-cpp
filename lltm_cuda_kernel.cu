@@ -2,8 +2,21 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include "cuda_runtime.h"
 
+#include <cstdint>
+#include <cooperative_groups.h>
+//#include <cooperative_groups/reduce.h>
+#include <cooperative_groups/memcpy_async.h>
+#include <cuda/pipeline>
 #include <vector>
+//#include <cuda/annotated_ptr>
+#include <cooperative_groups.h>
+#include <cooperative_groups/reduce.h>
+#include <cooperative_groups/memcpy_async.h>
+
+
+
 
 namespace {
 
