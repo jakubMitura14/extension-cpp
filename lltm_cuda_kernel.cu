@@ -6,34 +6,6 @@
 #include <vector>
 
 namespace {
-    template <typename scalar_t>
-    __device__ __forceinline__ scalar_t sigmoid(scalar_t z) {
-        return 1.0 / (1.0 + exp(-z));
-    }
-
-    template <typename scalar_t>
-    __device__ __forceinline__ scalar_t d_sigmoid(scalar_t z) {
-        const auto s = sigmoid(z);
-        return (1.0 - s) * s;
-    }
-
-    template <typename scalar_t>
-    __device__ __forceinline__ scalar_t d_tanh(scalar_t z) {
-        const auto t = tanh(z);
-        return 1 - (t * t);
-    }
-
-    template <typename scalar_t>
-    __device__ __forceinline__ scalar_t elu(scalar_t z, scalar_t alpha = 1.0) {
-        return fmaxf(0.0, z) + fminf(0.0, alpha * (exp(z) - 1.0));
-    }
-
-    template <typename scalar_t>
-    __device__ __forceinline__ scalar_t d_elu(scalar_t z, scalar_t alpha = 1.0) {
-        const auto e = exp(z);
-        const auto d_relu = z < 0.0 ? 0.0 : 1.0;
-        return d_relu + (((alpha * (e - 1.0)) < 0.0) ? (alpha * e) : 0.0);
-    }
 
     template <typename scalar_t>
     __global__ void lltm_cuda_forward_kernel(
@@ -48,14 +20,7 @@ namespace {
         const int n = blockIdx.y;
         // column index
         const int c = blockIdx.x * blockDim.x + threadIdx.x;
-        if (c < gates.size(2)) {
-            input_gate[n][c] = sigmoid(gates[n][0][c]);
-            output_gate[n][c] = sigmoid(gates[n][1][c]);
-            candidate_cell[n][c] = elu(gates[n][2][c]);
-            new_cell[n][c] =
-                old_cell[n][c] + candidate_cell[n][c] * input_gate[n][c];
-            new_h[n][c] = tanh(new_cell[n][c]) * output_gate[n][c];
-        }
+
     }
 
 } // namespace
