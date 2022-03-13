@@ -385,7 +385,6 @@ struct occupancyCalcData {
 
 
 
-
 namespace {
 
     template <typename scalar_t>
@@ -407,11 +406,34 @@ std::vector<torch::Tensor> lltm_cuda_forward(
     const int threads = 1024;
     const dim3 blocks(10);
 
-    AT_DISPATCH_FLOATING_TYPES(input.type(), "lltm_forward_cuda", ([&] {
-        lltm_cuda_forward_kernel<scalar_t> << <blocks, threads >> > (
-            input.packed_accessor<scalar_t, 1, torch::RestrictPtrTraits, size_t>(),
-            output.packed_accessor<scalar_t, 1, torch::RestrictPtrTraits, size_t>());
-        }));
+    //switch (tensor.type().scalarType()) {
+    //case torch::ScalarType::Double:
+    //        lltm_cuda_forward_kernel<Double> << <blocks, threads >> > (
+    //    input.packed_accessor<Double, 1, torch::RestrictPtrTraits, size_t>(),
+    //    output.packed_accessor<Double, 1, torch::RestrictPtrTraits, size_t>());;
+    //case torch::ScalarType::Float:
+    //    lltm_cuda_forward_kernel<Float> << <blocks, threads >> > (
+    //        input.packed_accessor<Float, 1, torch::RestrictPtrTraits, size_t>(),
+    //    output.packed_accessor<Float, 1, torch::RestrictPtrTraits, size_t>());;
+
+    //case torch::ScalarType::  :
+    //    lltm_cuda_forward_kernel<int32_t> << <blocks, threads >> > (
+    //        input.packed_accessor<int32_t, 1, torch::RestrictPtrTraits, size_t>(),
+    //        output.packed_accessor<int32_t, 1, torch::RestrictPtrTraits, size_t>());;
+    //}
+
+
+    AT_DISPATCH_ALL_TYPES(input.type(), "lltm_forward_cuda", ([&] {
+            lltm_cuda_forward_kernel<scalar_t> << <blocks, threads >> > (
+                input.packed_accessor<scalar_t, 1, torch::RestrictPtrTraits, size_t>(),
+                output.packed_accessor<scalar_t, 1, torch::RestrictPtrTraits, size_t>());
+            }));
+
+    //AT_DISPATCH_FLOATING_TYPES(input.type(), "lltm_forward_cuda", ([&] {
+    //    lltm_cuda_forward_kernel<scalar_t> << <blocks, threads >> > (
+    //        input.packed_accessor<scalar_t, 1, torch::RestrictPtrTraits, size_t>(),
+    //        output.packed_accessor<scalar_t, 1, torch::RestrictPtrTraits, size_t>());
+    //    }));
 
     return { input,output };
 }

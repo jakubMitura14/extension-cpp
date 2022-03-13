@@ -23,8 +23,8 @@ device = torch.device("cuda")
 kwargs = {'dtype': torch.float64,
           'device': device,
           'requires_grad': True}
-X = torch.ones(5).to(device)
-Y = torch.ones(5).to(device)
+X = torch.ones(5, dtype= torch.int32).to(device)
+Y = torch.ones(5,dtype= torch.int32).to(device)
 lltm_cuda.forwardB(X, Y)
 
 #check_forward(variables, True, True)
