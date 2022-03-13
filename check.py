@@ -46,41 +46,6 @@ def check_forward(variables, with_cuda, verbose):
         print('Ok')
 
 
-def check_backward(variables, with_cuda, verbose):
-    baseline_values = python.lltm_baseline.LLTMFunction.apply(*variables)
-    (baseline_values[0] + baseline_values[1]).sum().backward()
-    grad_baseline = get_grads(variables)
-
-    zero_grad(variables)
-
-    cpp_values = lltm.LLTMFunction.apply(*variables)
-    (cpp_values[0] + cpp_values[1]).sum().backward()
-    grad_cpp = get_grads(variables)
-
-    print('Backward: Baseline (Python) vs. C++ ... ', end='')
-    check_equal(grad_baseline, grad_cpp, verbose)
-    print('Ok')
-
-    if with_cuda:
-        zero_grad(variables)
-        cuda_values = lltm.LLTMFunction.apply(*variables)
-        (cuda_values[0] + cuda_values[1]).sum().backward()
-        grad_cuda = get_grads(variables)
-
-        print('Backward: Baseline (Python) vs. CUDA ... ', end='')
-        check_equal(grad_baseline, grad_cuda, verbose)
-        print('Ok')
-
-
-#parser = argparse.ArgumentParser()
-#parser.add_argument('direction', choices=['forward', 'backward'], nargs='+',default='forward')
-#parser.add_argument('-b', '--batch-size', type=int, default=3)
-#parser.add_argument('-f', '--features', type=int, default=17)
-#parser.add_argument('-s', '--state-size', type=int, default=5)
-#parser.add_argument('-c', '--cuda', action='store_true')
-#parser.add_argument('-v', '--verbose', action='store_true')
-#options = parser.parse_args()
-
 
 import lltm
 device = torch.device("cuda")
@@ -100,5 +65,3 @@ variables = [X, W, b, h, C]
 
 check_forward(variables, True, True)
 
-#if 'backward' in options.direction:
-#    check_backward(variables, options.cuda, options.verbose)
