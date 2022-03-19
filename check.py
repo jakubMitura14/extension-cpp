@@ -80,7 +80,7 @@ def benchmarkMitura():
     ])
 
 
-    data_dir = "D:\\dataSets\\CTORGmini\\"
+    data_dir = "D:\\dataSets\\CTORG\\"
 
     train_images = sorted(
         glob.glob(os.path.join(data_dir, "volumes 0-49", "*.nii.gz")))
@@ -105,18 +105,8 @@ def benchmarkMitura():
         summA= torch.sum(labelBoolTensorA)
         labelBoolTensorB =torch.where( dat['label']==2, 1, 0).bool().to(device)
         summB= torch.flatten(torch.sum(labelBoolTensorB))
-        print(summA )
-        print(" \n  ")
-        print(summB )
-        print("   \n  ")
-        print(sizz[2] )
-        print(sizz[3] )
-        print(sizz[4] )
-
-
-
-        lltm_cuda.forwardB(labelBoolTensorA, labelBoolTensorB,sizz[2], sizz[3],sizz[4])
-        print("after function in loop   \n  ")
+        if(summA>0 and summB>0):
+            lltm_cuda.forwardB(labelBoolTensorA, labelBoolTensorB,sizz[2], sizz[3],sizz[4])
 
 
 benchmarkMitura()

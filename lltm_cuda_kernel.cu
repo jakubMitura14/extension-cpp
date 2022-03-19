@@ -2922,7 +2922,6 @@ void benchmarkOliviera(torch::Tensor onlyBladderBoolFlatA,
     torch::Tensor onlyLungsBoolFlatA,  int WIDTH,  int HEIGHT
     ,  int DEPTH) {
   
-    printf("O 1  \n");
     //just originally it started for cpu so ...
 
     int lenn = WIDTH * HEIGHT * DEPTH;
@@ -2943,7 +2942,6 @@ void benchmarkOliviera(torch::Tensor onlyBladderBoolFlatA,
     //bool* onlyBladderBoolFlat = (bool*)onlyBladderBoolFlatA.to(torch::kCPU).data_ptr();
     //bool* onlyLungsBoolFlat = (bool*)onlyLungsBoolFlatA.to(torch::kCPU).data_ptr();
 
-  printf("O 2  %d   %d \n", onlyBladderBoolFlat[1], onlyLungsBoolFlat[1]);
 
 
     Volume img1 = Volume(WIDTH, HEIGHT, DEPTH), img2 = Volume(WIDTH, HEIGHT, DEPTH);
@@ -2957,23 +2955,19 @@ void benchmarkOliviera(torch::Tensor onlyBladderBoolFlatA,
         }
     }
 
-    printf("O 3  \n");
 
 
     auto begin = std::chrono::high_resolution_clock::now();
     HausdorffDistance* hd = new HausdorffDistance();
-    printf("O 4  \n");
 
     cudaDeviceSynchronize();
 
     int dist = (*hd).computeDistance(&img1, &img2);
     cudaDeviceSynchronize();
-    printf("O 5  \n");
 
 
     auto end = std::chrono::high_resolution_clock::now();
 
-    printf("O 6  \n");
 
 
     std::cout << "Total elapsed time: ";
@@ -2981,7 +2975,6 @@ void benchmarkOliviera(torch::Tensor onlyBladderBoolFlatA,
 
     printf("HD: %d \n", dist);
 
-    printf("O 7  \n");
 
 
     //freeing memory
@@ -3045,6 +3038,5 @@ void lltm_cuda_forward(
 //                output.packed_accessor<scalar_t, 1, torch::RestrictPtrTraits, size_t>());*/
 //        }));
 
-    ; printf(" aaafter dispatch ");
 };
 

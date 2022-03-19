@@ -22,11 +22,9 @@ void lltm_forward(
     CHECK_INPUT(input);
     CHECK_INPUT(output);
 
-    printf(" \n beefore lltm_cuda_forward in cpp \n");
 
     lltm_cuda_forward(input, output, xDim, yDim, zDim);
 
-    printf(" \n aaafter lltm_cuda_forward in cpp \n");
 
 }
 
