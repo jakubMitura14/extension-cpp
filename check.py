@@ -57,7 +57,6 @@ from torch.utils.cpp_extension import load
 lltm_cuda = load('lltm_cuda', ['lltm_cuda.cpp', 'lltm_cuda_kernel.cu'], verbose=True)
 help(lltm_cuda)
 
-print(" aaaaaaaaaaaaaa\n  ")
 
 
 import lltm_baseline
@@ -93,19 +92,6 @@ def benchmarkMitura():
         {"image": image_name, "label": label_name}
         for image_name, label_name in zip(train_images, train_labels)
     ]
-    data_dicts
-    data_dir = "D:\\dataSets\\CTORGmini\\"
-
-    train_images = sorted(
-        glob.glob(os.path.join(data_dir, "volumes 0-49", "*.nii.gz")))
-
-    train_labels = sorted(
-        glob.glob(os.path.join(data_dir, "labels", "*.nii.gz")))
-
-    data_dicts = [
-        {"image": image_name, "label": label_name}
-        for image_name, label_name in zip(train_images, train_labels)
-    ]
     check_ds = Dataset(data=data_dicts, transform=val_transforms)
     check_loader = DataLoader(check_ds, batch_size=1)
     print(" cccccccccccccc\n  ")
@@ -113,17 +99,25 @@ def benchmarkMitura():
 
     for dat in check_loader:
         print("**********************   \n  ")
-        labelBoolTensorA =torch.where( dat['label']==1, 1, 0).bool().to(device)
+        sizz = dat['image'].shape
+        
+        labelBoolTensorA =  torch.flatten(torch.where( dat['label']==1, 1, 0).bool().to(device))
         summA= torch.sum(labelBoolTensorA)
         labelBoolTensorB =torch.where( dat['label']==2, 1, 0).bool().to(device)
-        summB= torch.sum(labelBoolTensorB)
+        summB= torch.flatten(torch.sum(labelBoolTensorB))
         print(summA )
         print(" \n  ")
         print(summB )
-        print(" \n  ")
-        #lltm_cuda.forwardB(labelBoolTensorA, labelBoolTensorB)
+        print("   \n  ")
+        print(sizz[2] )
+        print(sizz[3] )
+        print(sizz[4] )
 
-        pass
+
+
+        lltm_cuda.forwardB(labelBoolTensorA, labelBoolTensorB,sizz[2], sizz[3],sizz[4])
+        print("after function in loop   \n  ")
+
 
 benchmarkMitura()
 

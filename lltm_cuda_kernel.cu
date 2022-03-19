@@ -1,17 +1,16 @@
 #include <torch/extension.h>
+//#include <ATen/ATen.h>
+#include <torch/torch.h>
 
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include "cuda_runtime.h"
 
 #include <cstdint>
 #include <cooperative_groups.h>
 //#include <cooperative_groups/reduce.h>
-#include <cooperative_groups/memcpy_async.h>
 #include <cuda/pipeline>
 #include <vector>
 //#include <cuda/annotated_ptr>
-#include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
 #include <cooperative_groups/memcpy_async.h>
 
@@ -21,6 +20,7 @@
 #include <cstdint>
 #include <assert.h>
 #include "device_launch_parameters.h"
+
 using namespace cooperative_groups;
 
 
@@ -54,30 +54,6 @@ constexpr uint32_t  isGoldOffset = (UINT16_MAX * 10);
 In order to be able to use cuda malloc 3d we will implemnt it as a series
 of 3d arrays
 */
-
-
-
-#pragma once
-template <typename TFPP>
-struct array3dWithDimsCPU {
-    //TFPP*** arrP;
-    TFPP* arrP;
-    int Nx;
-    int Ny;
-    int Nz;
-};
-
-
-#pragma once
-template <typename TFPP>
-struct array3dWithDimsGPU {
-    TFPP* arrP;
-    //cudaPitchedPtr arrPStr;
-    //cudaPitchedPtr arrPStr;
-    int Nx;
-    int Ny;
-    int Nz;
-};
 
 
 #pragma once
@@ -158,8 +134,13 @@ struct ForFullBoolPrepArgs {
     int dbYLength;
     int dbZLength;
     // gold standard and segmentation output array
-    array3dWithDimsCPU<TFF> goldArr;
-    array3dWithDimsCPU<TFF> segmArr;
+    torch::Tensor goldArr;
+    torch::Tensor segmArr;
+
+    int Nx;
+    int Ny;
+    int Nz;
+
     TFF numberToLookFor;// what we will look for in arrays
     //number and dimensionality of threads and blocks required to lounch bool kernel
     dim3 threads;
@@ -199,9 +180,12 @@ struct ForBoolKernelArgs {
     int dbYLength;
     int dbZLength;
     // gold standard and segmentation output array
-    array3dWithDimsGPU<TFB> goldArr;
-    array3dWithDimsGPU<TFB> segmArr;
+    torch::Tensor goldArr;
+    torch::Tensor segmArr;
     TFB numberToLookFor;
+    int Nx;
+    int Ny;
+    int Nz;
 
 
     // Frequent accesses to "a" and "b"; infrequent accesses to "x" and "y":
@@ -459,13 +443,220 @@ __device__ inline void setNeighbourBlocks(ForBoolKernelArgs<TCC> fbArgs
     };
 }
 
+
+
+
+/*
+iteration over metadata - becouse metadata may be small and to maximize occupancy we use linear index and then clalculate xMeta,ymeta,zMeta from this linear index ...
+*/
+#pragma once
+template <typename TYO>
+__global__ void getMinMaxes(ForBoolKernelArgs<TYO> fbArgs
+    , unsigned int* minMaxes
+    , TYO* goldArr
+    , TYO* segmArr
+    , MetaDataGPU metaData
+) {
+
+    // __global__ void getMinMaxes(unsigned int* minMaxes) {
+     ////////////some initializations
+    thread_block cta = this_thread_block();
+    //thread_block_tile<32> tile = tiled_partition<32>(cta);
+
+
+
+    //shared memory
+
+    __shared__ bool anyInGold[1];
+    //__shared__ uint32_t reduction_s[32];
+    //1)maxX 2)minX 3)maxY 4) minY 5) maxZ 6) minZ
+    __shared__ unsigned int minMaxesInShmem[7];
+
+    if ((threadIdx.x == 1) && (threadIdx.y == 0)) { minMaxesInShmem[1] = 0; };
+    if ((threadIdx.x == 2) && (threadIdx.y == 0)) { minMaxesInShmem[2] = 1000; };
+
+    if ((threadIdx.x == 3) && (threadIdx.y == 0)) { minMaxesInShmem[3] = 0; };
+    if ((threadIdx.x == 4) && (threadIdx.y == 0)) { minMaxesInShmem[4] = 1000; };
+
+    if ((threadIdx.x == 5) && (threadIdx.y == 0)) { minMaxesInShmem[5] = 0; };
+    if ((threadIdx.x == 6) && (threadIdx.y == 0)) { minMaxesInShmem[6] = 1000; };
+
+    if ((threadIdx.x == 7) && (threadIdx.y == 0)) { anyInGold[1] = false; };
+
+
+    if ((threadIdx.x == 1) && (threadIdx.y == 0) && (blockIdx.x == 0)) {
+        printf("in minMaxes beg  totalMetaLength  %d Nx %d Ny %d Nz %d \n"
+            , fbArgs.metaData.totalMetaLength
+            , fbArgs.Nx
+            , fbArgs.Ny
+            , fbArgs.Nz
+        
+        );
+
+    //    if (blockIdx.x == 0) {
+    //        printf(" dims meta in min maxes  kernel Meta X %d MetaY %d metaZ %d dbXSize %d dbYsize %d dbZsize %d minX %d minY %d minZ \n "
+    //            , metaData.metaXLength, metaData.MetaYLength, metaData.MetaZLength
+    //            , fbArgs.dbXLength, fbArgs.dbYLength, fbArgs.dbZLength
+    //            , metaData.minX, metaData.minY, metaData.minZ
+    //        );
+
+    }
+
+    __syncthreads();
+
+    /////////////////////////
+
+
+    //main metadata iteration
+    for (auto linIdexMeta = blockIdx.x; linIdexMeta < metaData.totalMetaLength; linIdexMeta += gridDim.x) {
+        //we get from linear index  the coordinates of the metadata block of intrest
+        int  xMeta = linIdexMeta % metaData.metaXLength;
+        int   zMeta = int(floor((float)(linIdexMeta / (fbArgs.metaData.metaXLength * metaData.MetaYLength))));
+        int   yMeta = int(floor((float)((linIdexMeta - ((zMeta * metaData.metaXLength * metaData.MetaYLength) + xMeta)) / metaData.metaXLength)));
+        //iterating over data block
+        for (uint8_t xLoc = threadIdx.x; xLoc < 32; xLoc += blockDim.x) {
+            uint32_t x = xMeta * fbArgs.dbXLength + xLoc;//absolute position
+            for (uint8_t yLoc = threadIdx.y; yLoc < fbArgs.dbYLength; yLoc += blockDim.y) {
+                uint32_t  y = yMeta * fbArgs.dbYLength + yLoc;//absolute position
+                //if (y == 0) {
+                //    printf("x %d  in min maxes \n ", x);
+
+                //}
+                if (y < fbArgs.Ny && x < fbArgs.Nx) {
+
+                    // resetting 
+
+
+                    for (uint8_t zLoc = 0; zLoc < fbArgs.dbZLength; zLoc++) {
+                        uint32_t z = zMeta * fbArgs.dbZLength + zLoc;//absolute position
+                        if (z < fbArgs.Nz) {
+                            //first array gold
+                            //uint8_t& zLocRef = zLoc; uint8_t& yLocRef = yLoc; uint8_t& xLocRef = xLoc;
+
+                            // setting bits
+                            bool goldBool = goldArr[x + y * fbArgs.Nx + z * fbArgs.Nx * fbArgs.Ny] == fbArgs.numberToLookFor;  // (getTensorRow<TYU>(tensorslice, fbArgs.goldArr, fbArgs.goldArr.Ny, y, z)[x] == fbArgs.numberToLookFor);
+                            bool segmBool = segmArr[x + y * fbArgs.Nx + z * fbArgs.Nx * fbArgs.Ny] == fbArgs.numberToLookFor;
+                            if (goldBool || segmBool) {
+                                anyInGold[0] = true;
+                                //printf(" \n in min maxes dims meta in min maxes   x %d y%d z%d xMeta %d yMeta %d zMeta %d  kernel Meta X %d MetaY %d metaZ %d dbXSize %d dbYsize %d dbZsize %d minX %d minY %d minZ %d linIdexMeta %d counted %d  \n "
+                                //    ,x,y,z,
+                                //    xMeta,yMeta,zMeta
+                                //    , metaData.metaXLength, metaData.MetaYLength, metaData.MetaZLength
+                                //    , fbArgs.dbXLength, fbArgs.dbYLength, fbArgs.dbZLength
+                                //    , metaData.minX, metaData.minY, metaData.minZ
+                                //    , linIdexMeta
+                                //    , int(floor((float)((linIdexMeta - ((zMeta * metaData.metaXLength * metaData.MetaYLength) + xMeta)) / metaData.metaXLength)))
+                                //);
+
+                            }
+
+
+
+                        }
+
+                    }
+                }
+
+                //  __syncthreads();
+                  //waiting so shared memory will be loaded evrywhere
+                  //on single thread we do last sum reduction
+
+                  /////////////////// setting min and maxes
+  //    //1)maxX 2)minX 3)maxY 4) minY 5) maxZ 6) minZ
+                auto active = coalesced_threads();
+                sync(cta);
+                active.sync();
+
+                if ((threadIdx.x == 0) && (threadIdx.y == 0) && anyInGold[0]) { minMaxesInShmem[1] = max(xMeta, minMaxesInShmem[1]); };
+                if ((threadIdx.x == 1) && (threadIdx.y == 0) && anyInGold[0]) { minMaxesInShmem[2] = min(xMeta, minMaxesInShmem[2]); };
+
+                if ((threadIdx.x == 2) && (threadIdx.y == 0) && anyInGold[0]) {
+
+                    minMaxesInShmem[3] = max(yMeta, minMaxesInShmem[3]);
+
+                    //if (minMaxesInShmem[3] > 0) {
+                    //    printf(" prim minMaxesInShmem maxY %d meta %d \n ", minMaxesInShmem[3], yMeta);
+                    //}
+
+                };
+                if ((threadIdx.x == 3) && (threadIdx.y == 0) && anyInGold[0]) { minMaxesInShmem[4] = min(yMeta, minMaxesInShmem[4]); };
+
+                if ((threadIdx.x == 4) && (threadIdx.y == 0) && anyInGold[0]) { minMaxesInShmem[5] = max(zMeta, minMaxesInShmem[5]); };
+                if ((threadIdx.x == 5) && (threadIdx.y == 0) && anyInGold[0]) {
+                    minMaxesInShmem[6] = min(zMeta, minMaxesInShmem[6]);
+                    // printf("local fifth %d  \n", minMaxesInShmem[6]);
+                };
+                // active.sync();
+                sync(cta); // just to reduce the warp divergence
+                anyInGold[0] = false;
+
+
+
+
+            }
+        }
+
+    }
+    sync(cta);
+
+    auto active = coalesced_threads();
+
+    if ((threadIdx.x == 1) && (threadIdx.y == 0)) {
+        //  printf("\n in minMaxes internal  %d \n", minMaxesInShmem[1]);
+       //getTensorRow<unsigned int>(tensorslice, fbArgs.metaData.minMaxes, fbArgs.metaData.minMaxes.Ny, 0, 0)[0] = 61;
+        atomicMax(&minMaxes[1], minMaxesInShmem[1]);
+        //atomicMax(&minMaxes[1], 2);
+       // minMaxes[1] = 0;
+    };
+
+    if ((threadIdx.x == 0) && (threadIdx.y == 0)) {
+
+        atomicMin(&minMaxes[2], minMaxesInShmem[2]);
+    };
+
+    if ((threadIdx.x == 1) && (threadIdx.y == 0)) {
+        atomicMax(&minMaxes[3], minMaxesInShmem[3]);
+        //  printf(" minMaxesInShmem maxY %d \n ", minMaxes[3]);
+
+    };
+
+    if ((threadIdx.x == 2) && (threadIdx.y == 0)) {
+        atomicMin(&minMaxes[4], minMaxesInShmem[4]);
+        //   printf(" minMaxesInShmem minY %d \n ", minMaxes[4]);
+
+    };
+
+
+
+    if (threadIdx.x == 3 && threadIdx.y == 0) {
+        atomicMax(&minMaxes[5], minMaxesInShmem[5]);
+        //  printf(" minMaxesInShmem  %d \n ", minMaxes[5]);
+    };
+
+    if (threadIdx.x == 4 && threadIdx.y == 0) {
+        atomicMin(&minMaxes[6], minMaxesInShmem[6]);
+        // printf(" minMaxesInShmem  %d \n ", minMaxes[6]);
+
+    };
+
+
+
+
+
+}
+
+
+
 /*
 iteration over metadata - becouse metadata may be small and to maximize occupancy we use linear index and then clalculate xMeta,ymeta,zMeta from this linear index ...
 */
 #pragma once
 template <typename TYO>
 __global__ void boolPrepareKernel(ForBoolKernelArgs<TYO> fbArgs
-    , MetaDataGPU metaData, uint32_t* origArrs, uint32_t* metaDataArr, TYO* goldArr, TYO* segmArr, unsigned int* minMaxes) {
+    , MetaDataGPU metaData, uint32_t* origArrs, uint32_t* metaDataArr
+    , TYO* goldArr
+    , TYO* segmArr
+    , unsigned int* minMaxes) {
 
     ////////////some initializations
     bool goldBool = false;
@@ -540,7 +731,7 @@ __global__ void boolPrepareKernel(ForBoolKernelArgs<TYO> fbArgs
             uint32_t x = (xMeta + metaData.minX) * fbArgs.dbXLength + xLoc;//absolute position
             for (uint8_t yLoc = threadIdx.y; yLoc < fbArgs.dbYLength; yLoc += blockDim.y) {
                 uint32_t  y = (yMeta + metaData.minY) * fbArgs.dbYLength + yLoc;//absolute position
-                if (y < fbArgs.goldArr.Ny && x < fbArgs.goldArr.Nx) {
+                if (y < fbArgs.Ny && x < fbArgs.Nx) {
 
                     // resetting 
                     sharedForGold[xLoc + yLoc * fbArgs.dbXLength] = 0;
@@ -549,12 +740,12 @@ __global__ void boolPrepareKernel(ForBoolKernelArgs<TYO> fbArgs
 
                     for (uint8_t zLoc = 0; zLoc < fbArgs.dbZLength; zLoc++) {
                         uint32_t z = (zMeta + metaData.minZ) * fbArgs.dbZLength + zLoc;//absolute position
-                        if (z < fbArgs.goldArr.Nz) {
+                        if (z < fbArgs.Nz) {
                             //char* tensorslice;
 
                             //first array gold
-                            bool goldBool = goldArr[x + y * fbArgs.goldArr.Nx + z * fbArgs.goldArr.Nx * fbArgs.goldArr.Ny] == fbArgs.numberToLookFor;
-                            bool segmBool = segmArr[x + y * fbArgs.segmArr.Nx + z * fbArgs.segmArr.Nx * fbArgs.segmArr.Ny] == fbArgs.numberToLookFor;
+                            bool goldBool = goldArr[x + y * fbArgs.Nx + z * fbArgs.Nx * fbArgs.Ny] == fbArgs.numberToLookFor;
+                            bool segmBool = segmArr[x + y * fbArgs.Nx + z * fbArgs.Nx * fbArgs.Ny] == fbArgs.numberToLookFor;
                             //goldBool = true;
 
                             // setting bits
@@ -606,7 +797,7 @@ __global__ void boolPrepareKernel(ForBoolKernelArgs<TYO> fbArgs
             uint32_t x = (xMeta + metaData.minX) * fbArgs.dbXLength + xLoc;//absolute position
             for (uint8_t yLoc = threadIdx.y; yLoc < fbArgs.dbYLength; yLoc += blockDim.y) {
                 uint32_t  y = (yMeta + metaData.minY) * fbArgs.dbYLength + yLoc;//absolute position
-                if (y < fbArgs.goldArr.Ny && x < fbArgs.goldArr.Nx) {
+                if (y < fbArgs.Ny && x < fbArgs.Nx) {
 
                     origArrs[linIdexMeta * metaData.mainArrSectionLength + yLoc * 32 + xLoc] = sharedForGold[yLoc * 32 + xLoc];
                     origArrs[linIdexMeta * metaData.mainArrSectionLength + yLoc * 32 + xLoc + metaData.mainArrXLength] = sharedForSegm[yLoc * 32 + xLoc];
@@ -918,241 +1109,12 @@ __global__ void firstMetaPrepareKernel(ForBoolKernelArgs<PYO> fbArgs
 
 
 
-/*
-iteration over metadata - becouse metadata may be small and to maximize occupancy we use linear index and then clalculate xMeta,ymeta,zMeta from this linear index ...
-*/
-#pragma once
-template <typename TYO>
-__global__ void getMinMaxes(ForBoolKernelArgs<TYO> fbArgs
-    , unsigned int* minMaxes
-    , TYO* goldArr, TYO* segmArr, MetaDataGPU metaData
-) {
 
-    // __global__ void getMinMaxes(unsigned int* minMaxes) {
-     ////////////some initializations
-    thread_block cta = this_thread_block();
-    //thread_block_tile<32> tile = tiled_partition<32>(cta);
-
-
-
-    //shared memory
-
-    __shared__ bool anyInGold[1];
-    //__shared__ uint32_t reduction_s[32];
-    //1)maxX 2)minX 3)maxY 4) minY 5) maxZ 6) minZ
-    __shared__ unsigned int minMaxesInShmem[7];
-
-    if ((threadIdx.x == 1) && (threadIdx.y == 0)) { minMaxesInShmem[1] = 0; };
-    if ((threadIdx.x == 2) && (threadIdx.y == 0)) { minMaxesInShmem[2] = 1000; };
-
-    if ((threadIdx.x == 3) && (threadIdx.y == 0)) { minMaxesInShmem[3] = 0; };
-    if ((threadIdx.x == 4) && (threadIdx.y == 0)) { minMaxesInShmem[4] = 1000; };
-
-    if ((threadIdx.x == 5) && (threadIdx.y == 0)) { minMaxesInShmem[5] = 0; };
-    if ((threadIdx.x == 6) && (threadIdx.y == 0)) { minMaxesInShmem[6] = 1000; };
-
-    if ((threadIdx.x == 7) && (threadIdx.y == 0)) { anyInGold[1] = false; };
-
-
-    //if ((threadIdx.x == 1) && (threadIdx.y == 0)) {
-    //    //printf("in minMaxes beg  totalMetaLength  %d Nx %d Ny %d Nz %d \n"
-    //    //    , fbArgs.metaData.totalMetaLength
-    //    //    , fbArgs.goldArr.Nx
-    //    //    , fbArgs.goldArr.Ny
-    //    //    , fbArgs.goldArr.Nz
-    //    //
-    //    //);
-
-    //    if (blockIdx.x == 0) {
-    //        printf(" dims meta in min maxes  kernel Meta X %d MetaY %d metaZ %d dbXSize %d dbYsize %d dbZsize %d minX %d minY %d minZ \n "
-    //            , metaData.metaXLength, metaData.MetaYLength, metaData.MetaZLength
-    //            , fbArgs.dbXLength, fbArgs.dbYLength, fbArgs.dbZLength
-    //            , metaData.minX, metaData.minY, metaData.minZ
-    //        );
-
-    //}
-
-    __syncthreads();
-
-    /////////////////////////
-
-
-    //main metadata iteration
-    for (auto linIdexMeta = blockIdx.x; linIdexMeta < metaData.totalMetaLength; linIdexMeta += gridDim.x) {
-        //we get from linear index  the coordinates of the metadata block of intrest
-        int  xMeta = linIdexMeta % metaData.metaXLength;
-        int   zMeta = int(floor((float)(linIdexMeta / (fbArgs.metaData.metaXLength * metaData.MetaYLength))));
-        int   yMeta = int(floor((float)((linIdexMeta - ((zMeta * metaData.metaXLength * metaData.MetaYLength) + xMeta)) / metaData.metaXLength)));
-        //iterating over data block
-        for (uint8_t xLoc = threadIdx.x; xLoc < 32; xLoc += blockDim.x) {
-            uint32_t x = xMeta * fbArgs.dbXLength + xLoc;//absolute position
-            for (uint8_t yLoc = threadIdx.y; yLoc < fbArgs.dbYLength; yLoc += blockDim.y) {
-                uint32_t  y = yMeta * fbArgs.dbYLength + yLoc;//absolute position
-                //if (y == 0) {
-                //    printf("x %d  in min maxes \n ", x);
-
-                //}
-                if (y < fbArgs.goldArr.Ny && x < fbArgs.goldArr.Nx) {
-
-                    // resetting 
-
-
-                    for (uint8_t zLoc = 0; zLoc < fbArgs.dbZLength; zLoc++) {
-                        uint32_t z = zMeta * fbArgs.dbZLength + zLoc;//absolute position
-                        if (z < fbArgs.goldArr.Nz) {
-                            //first array gold
-                            //uint8_t& zLocRef = zLoc; uint8_t& yLocRef = yLoc; uint8_t& xLocRef = xLoc;
-
-                            // setting bits
-                            bool goldBool = goldArr[x + y * fbArgs.goldArr.Nx + z * fbArgs.goldArr.Nx * fbArgs.goldArr.Ny] == fbArgs.numberToLookFor;  // (getTensorRow<TYU>(tensorslice, fbArgs.goldArr, fbArgs.goldArr.Ny, y, z)[x] == fbArgs.numberToLookFor);
-                            bool segmBool = segmArr[x + y * fbArgs.goldArr.Nx + z * fbArgs.goldArr.Nx * fbArgs.goldArr.Ny] == fbArgs.numberToLookFor;
-                            if (goldBool || segmBool) {
-                                anyInGold[0] = true;
-                                //printf(" \n in min maxes dims meta in min maxes   x %d y%d z%d xMeta %d yMeta %d zMeta %d  kernel Meta X %d MetaY %d metaZ %d dbXSize %d dbYsize %d dbZsize %d minX %d minY %d minZ %d linIdexMeta %d counted %d  \n "
-                                //    ,x,y,z,
-                                //    xMeta,yMeta,zMeta
-                                //    , metaData.metaXLength, metaData.MetaYLength, metaData.MetaZLength
-                                //    , fbArgs.dbXLength, fbArgs.dbYLength, fbArgs.dbZLength
-                                //    , metaData.minX, metaData.minY, metaData.minZ
-                                //    , linIdexMeta
-                                //    , int(floor((float)((linIdexMeta - ((zMeta * metaData.metaXLength * metaData.MetaYLength) + xMeta)) / metaData.metaXLength)))
-                                //);
-
-                            }
-
-
-
-                        }
-
-                    }
-                }
-
-                //  __syncthreads();
-                  //waiting so shared memory will be loaded evrywhere
-                  //on single thread we do last sum reduction
-
-                  /////////////////// setting min and maxes
-  //    //1)maxX 2)minX 3)maxY 4) minY 5) maxZ 6) minZ
-                auto active = coalesced_threads();
-                sync(cta);
-                active.sync();
-
-                if ((threadIdx.x == 0) && (threadIdx.y == 0) && anyInGold[0]) { minMaxesInShmem[1] = max(xMeta, minMaxesInShmem[1]); };
-                if ((threadIdx.x == 1) && (threadIdx.y == 0) && anyInGold[0]) { minMaxesInShmem[2] = min(xMeta, minMaxesInShmem[2]); };
-
-                if ((threadIdx.x == 2) && (threadIdx.y == 0) && anyInGold[0]) {
-
-                    minMaxesInShmem[3] = max(yMeta, minMaxesInShmem[3]);
-
-                    //if (minMaxesInShmem[3] > 0) {
-                    //    printf(" prim minMaxesInShmem maxY %d meta %d \n ", minMaxesInShmem[3], yMeta);
-                    //}
-
-                };
-                if ((threadIdx.x == 3) && (threadIdx.y == 0) && anyInGold[0]) { minMaxesInShmem[4] = min(yMeta, minMaxesInShmem[4]); };
-
-                if ((threadIdx.x == 4) && (threadIdx.y == 0) && anyInGold[0]) { minMaxesInShmem[5] = max(zMeta, minMaxesInShmem[5]); };
-                if ((threadIdx.x == 5) && (threadIdx.y == 0) && anyInGold[0]) {
-                    minMaxesInShmem[6] = min(zMeta, minMaxesInShmem[6]);
-                    // printf("local fifth %d  \n", minMaxesInShmem[6]);
-                };
-                // active.sync();
-                sync(cta); // just to reduce the warp divergence
-                anyInGold[0] = false;
-
-
-
-
-            }
-        }
-
-    }
-    sync(cta);
-
-    auto active = coalesced_threads();
-
-    if ((threadIdx.x == 1) && (threadIdx.y == 0)) {
-        //  printf("\n in minMaxes internal  %d \n", minMaxesInShmem[1]);
-       //getTensorRow<unsigned int>(tensorslice, fbArgs.metaData.minMaxes, fbArgs.metaData.minMaxes.Ny, 0, 0)[0] = 61;
-        atomicMax(&minMaxes[1], minMaxesInShmem[1]);
-        //atomicMax(&minMaxes[1], 2);
-       // minMaxes[1] = 0;
-    };
-
-    if ((threadIdx.x == 0) && (threadIdx.y == 0)) {
-
-        atomicMin(&minMaxes[2], minMaxesInShmem[2]);
-    };
-
-    if ((threadIdx.x == 1) && (threadIdx.y == 0)) {
-        atomicMax(&minMaxes[3], minMaxesInShmem[3]);
-        //  printf(" minMaxesInShmem maxY %d \n ", minMaxes[3]);
-
-    };
-
-    if ((threadIdx.x == 2) && (threadIdx.y == 0)) {
-        atomicMin(&minMaxes[4], minMaxesInShmem[4]);
-        //   printf(" minMaxesInShmem minY %d \n ", minMaxes[4]);
-
-    };
-
-
-
-    if (threadIdx.x == 3 && threadIdx.y == 0) {
-        atomicMax(&minMaxes[5], minMaxesInShmem[5]);
-        //  printf(" minMaxesInShmem  %d \n ", minMaxes[5]);
-    };
-
-    if (threadIdx.x == 4 && threadIdx.y == 0) {
-        atomicMin(&minMaxes[6], minMaxesInShmem[6]);
-        // printf(" minMaxesInShmem  %d \n ", minMaxes[6]);
-
-    };
-
-
-
-
-
-}
-
-
-
-
-
-
-#pragma once
-template <typename EEY>
-array3dWithDimsCPU<EEY>  get3dArrCPU(EEY* arrP, int Nx, int Ny, int Nz) {
-    array3dWithDimsCPU<EEY> res;
-    res.Nx = Nx;
-    res.Ny = Ny;
-    res.Nz = Nz;
-    res.arrP = arrP;
-
-    return res;
-}
-
-
-
-template <typename T >
-array3dWithDimsGPU<T> allocateMainArray(T*& gpuArrPointer, T*& cpuArrPointer, const int WIDTH, const int HEIGHT, const int DEPTH, cudaStream_t stream) {
-    size_t sizeMainArr = (sizeof(T) * WIDTH * HEIGHT * DEPTH);
-    array3dWithDimsGPU<T> res;
-
-    cudaMallocAsync(&gpuArrPointer, sizeMainArr, stream);
-    cudaMemcpyAsync(gpuArrPointer, cpuArrPointer, sizeMainArr, cudaMemcpyHostToDevice, stream);
-    res.arrP = gpuArrPointer;
-    res.Nx = WIDTH;
-    res.Ny = HEIGHT;
-    res.Nz = DEPTH;
-    return res;
-}
 
 
 
 
 /*
-given appropriate cudaPitchedPtr and ForFullBoolPrepArgs will return ForBoolKernelArgs
 */
 #pragma once
 template <typename TCC>
@@ -1161,17 +1123,27 @@ inline ForBoolKernelArgs<TCC> getArgsForKernel(ForFullBoolPrepArgs<TCC>& mainFun
     , const int xLen, const int yLen, const int zLen, cudaStream_t stream
 ) {
 
+
+    mainFunArgs.Nx = xLen;
+    mainFunArgs.Ny = yLen;
+    mainFunArgs.Nz = zLen;
+
     //main arrays allocations
-    TCC* goldArrPointer;
-    TCC* segmArrPointer;
+    //TCC* goldArrPointer;
+    //TCC* segmArrPointer;
     //size_t sizeMainArr = (sizeof(T) * WIDTH * HEIGHT * DEPTH);
-    size_t sizeMainArr = (sizeof(TCC) * xLen * yLen * zLen);
-    array3dWithDimsGPU<TCC> goldArr = allocateMainArray(goldArrPointer, mainFunArgs.goldArr.arrP, xLen, yLen, zLen, stream);
-    array3dWithDimsGPU<TCC> segmArr = allocateMainArray(segmArrPointer, mainFunArgs.segmArr.arrP, xLen, yLen, zLen, stream);
+    //size_t sizeMainArr = (sizeof(TCC) * xLen * yLen * zLen);
+    //array3dWithDimsGPU<TCC> goldArr = allocateMainArray(goldArrPointer, mainFunArgs.goldArr.arrP, xLen, yLen, zLen, stream);
+    //array3dWithDimsGPU<TCC> segmArr = allocateMainArray(segmArrPointer, mainFunArgs.segmArr.arrP, xLen, yLen, zLen, stream);
     unsigned int* minMaxes;
     size_t sizeminMaxes = sizeof(unsigned int) * 20;
     cudaMallocAsync(&minMaxes, sizeminMaxes, stream);
     ForBoolKernelArgs<TCC> res;
+
+    res.Nx = xLen;
+    res.Ny = yLen;
+    res.Nz = zLen;
+
     res.metaData = allocateMetaDataOnGPU(mainFunArgs.metaData, minMaxes);
     res.metaData.minMaxes = minMaxes;
     res.minMaxes = minMaxes;
@@ -1192,8 +1164,8 @@ inline ForBoolKernelArgs<TCC> getArgsForKernel(ForFullBoolPrepArgs<TCC>& mainFun
     res.metaData.maxZ = res.metaData.MetaZLength;
 
     res.metaData.totalMetaLength = res.metaData.metaXLength * res.metaData.MetaYLength * res.metaData.MetaZLength;
-    res.goldArr = goldArr;
-    res.segmArr = segmArr;
+    res.goldArr = mainFunArgs.goldArr;
+    res.segmArr = mainFunArgs.segmArr;
 
 
     return res;
@@ -1273,8 +1245,8 @@ inline int allocateMemoryAfterBoolKernel(ForBoolKernelArgs<ZZR>& gpuArgs, ForFul
     uint32_t* mainArrAPointer;
     uint32_t* mainArrBPointer;
     //free no longer needed arrays
-    cudaFreeAsync(gpuArgs.goldArr.arrP, stream);
-    cudaFreeAsync(gpuArgs.segmArr.arrP, stream);
+    //cudaFreeAsync(gpuArgs.goldArr.arrP, stream);
+    //cudaFreeAsync(gpuArgs.segmArr.arrP, stream);
 
     //copy on cpu
     size_t size = sizeof(unsigned int) * 20;
@@ -1470,7 +1442,7 @@ __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
     */
     // __shared__ uint32_t mainShmem[lengthOfMainShmem];
     __shared__ uint32_t mainShmem[lengthOfMainShmem];
-//    cuda::associate_access_property(&mainShmem, cuda::access_property::shared{});
+    //    cuda::associate_access_property(&mainShmem, cuda::access_property::shared{});
 
 
 
@@ -2441,24 +2413,45 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
     //  cudaMemcpyParams memcpyParams = { 0 };
 
 
+    T* goldArrPointer = (T*)fFArgs.goldArr.data_ptr();
+    T* segmArrPointer = (T*)fFArgs.segmArr.data_ptr();
+
+
 
     ForBoolKernelArgs<T> fbArgs = getArgsForKernel<T>(fFArgs, occData.warpsNumbForMainPass, occData.blockForMainPass, WIDTH, HEIGHT, DEPTH, stream);
 
-    //checkCuda(cudaDeviceSynchronize(), "a1");
+   // checkCuda(cudaDeviceSynchronize(), "a1");
 
-    //getMinMaxes << <blockSizeForMinMax, dim3(32, warpsNumbForMinMax) >> > ( minMaxes);
-    getMinMaxes << <occData.blockSizeForMinMax, dim3(32, occData.warpsNumbForMinMax) >> > (fbArgs, fbArgs.minMaxes, fbArgs.goldArr.arrP, fbArgs.segmArr.arrP, fbArgs.metaData);
 
-    //checkCuda(cudaDeviceSynchronize(), "a1b");
+
+    getMinMaxes << <occData.blockSizeForMinMax, dim3(32, occData.warpsNumbForMinMax) >> > (fbArgs, fbArgs.minMaxes
+        , goldArrPointer
+        , segmArrPointer
+        , fbArgs.metaData);
+
+
+
+
+   // checkCuda(cudaDeviceSynchronize(), "a1b");
 
     fbArgs.metaData = allocateMemoryAfterMinMaxesKernel(fbArgs, fFArgs, stream);
-
-    //checkCuda(cudaDeviceSynchronize(), "a2b");
-
+    
     boolPrepareKernel << <occData.blockSizeFoboolPrepareKernel, dim3(32, occData.warpsNumbForboolPrepareKernel) >> > (
-        fbArgs, fbArgs.metaData, fbArgs.origArrsPointer, fbArgs.metaDataArrPointer, fbArgs.goldArr.arrP, fbArgs.segmArr.arrP, fbArgs.minMaxes);
+        fbArgs, fbArgs.metaData, fbArgs.origArrsPointer, fbArgs.metaDataArrPointer
+        , goldArrPointer
+        , segmArrPointer
+        , fbArgs.minMaxes);
 
-    //checkCuda(cudaDeviceSynchronize(), "a3");
+   // checkCuda(cudaDeviceSynchronize(), "a2222b");
+    //AT_DISPATCH_ALL_TYPES(fFArgs.goldArr.type(), "boolPrepareKernel", ([&] {
+    //boolPrepareKernel<scalar_t> << <occData.blockSizeFoboolPrepareKernel, dim3(32, occData.warpsNumbForboolPrepareKernel) >> > (
+    //    fbArgs, fbArgs.metaData, fbArgs.origArrsPointer, fbArgs.metaDataArrPointer
+    //    , fFArgs.goldArr.packed_accessor<scalar_t, 1, torch::RestrictPtrTraits, size_t>()
+    //    , fFArgs.segmArr.packed_accessor<scalar_t, 1, torch::RestrictPtrTraits, size_t>()
+    //    , fbArgs.minMaxes);
+    //}));
+
+   //checkCuda(cudaDeviceSynchronize(), "a3");
 
     int fpPlusFn = allocateMemoryAfterBoolKernel(fbArgs, fFArgs, stream);
 
@@ -2467,17 +2460,18 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
 
     firstMetaPrepareKernel << <occData.blockForFirstMetaPass, occData.theadsForFirstMetaPass >> > (fbArgs, fbArgs.metaData, fbArgs.minMaxes, fbArgs.workQueuePointer, fbArgs.origArrsPointer, fbArgs.metaDataArrPointer);
 
-    //checkCuda(cudaDeviceSynchronize(), "a5");
+   // checkCuda(cudaDeviceSynchronize(), "a5");
 
     void* kernel_args[] = { &fbArgs };
     cudaLaunchCooperativeKernel((void*)(mainPassKernel<int>), occData.blockForMainPass, dim3(32, occData.warpsNumbForMainPass), kernel_args);
 
-    //checkCuda(cudaDeviceSynchronize(), "a6");
+   // checkCuda(cudaDeviceSynchronize(), "a6");
 
     if (resToSave) {
         copyResultstoCPU(fbArgs, fFArgs, stream);
 
     }
+
     cudaFreeAsync(fbArgs.resultListPointerMeta, stream);
     cudaFreeAsync(fbArgs.resultListPointerLocal, stream);
     cudaFreeAsync(fbArgs.resultListPointerIterNumb, stream);
@@ -2540,16 +2534,19 @@ T FindMax(T* arr, size_t n)
 }
 
 
+//void benchmarkMitura(torch::PackedTensorAccessor<scalar_t, 1, at::RestrictPtrTraits, size_t> onlyBladderBoolFlat,
+//    torch::PackedTensorAccessor<scalar_t, 1, at::RestrictPtrTraits, size_t> onlyLungsBoolFlat, const int WIDTH, const int HEIGHT, const int DEPTH, cudaStream_t stream1
 
+void benchmarkMitura(torch::Tensor onlyBladderBoolFlat,
+    torch::Tensor onlyLungsBoolFlat
+    , const int WIDTH, const int HEIGHT, const int DEPTH) {
 
-
-
-void benchmarkMitura(bool* onlyBladderBoolFlat, bool* onlyLungsBoolFlat, const int WIDTH, const int HEIGHT
-    , const int DEPTH, cudaStream_t stream1) {
-
-
-
-    bool resultToCopy = true;
+    cudaError_t syncErr;
+    cudaError_t asyncErr;
+    //TODO() use https ://pytorch.org/cppdocs/notes/tensor_cuda_stream.html
+    cudaStream_t stream1;
+    cudaStreamCreate(&stream1);
+    bool resultToCopy = false;
     //// some preparations and configuring
     MetaDataCPU metaData;
     size_t size = sizeof(unsigned int) * 20;
@@ -2559,8 +2556,8 @@ void benchmarkMitura(bool* onlyBladderBoolFlat, bool* onlyLungsBoolFlat, const i
     ForFullBoolPrepArgs<bool> forFullBoolPrepArgs;
     forFullBoolPrepArgs.metaData = metaData;
     forFullBoolPrepArgs.numberToLookFor = true;
-    forFullBoolPrepArgs.goldArr = get3dArrCPU(onlyBladderBoolFlat, WIDTH, HEIGHT, DEPTH);
-    forFullBoolPrepArgs.segmArr = get3dArrCPU(onlyLungsBoolFlat, WIDTH, HEIGHT, DEPTH);
+    forFullBoolPrepArgs.goldArr = onlyBladderBoolFlat;// get3dArrCPU(onlyBladderBoolFlat.packed_accessor32<bool, 1, torch::RestrictPtrTraits>(), WIDTH, HEIGHT, DEPTH);
+    forFullBoolPrepArgs.segmArr = onlyLungsBoolFlat;//get3dArrCPU(onlyLungsBoolFlat.packed_accessor32<bool, 1, torch::RestrictPtrTraits>(), WIDTH, HEIGHT, DEPTH);
 
     occupancyCalcData occData = getOccupancy<bool>();
 
@@ -2576,44 +2573,36 @@ void benchmarkMitura(bool* onlyBladderBoolFlat, bool* onlyLungsBoolFlat, const i
     cudaDeviceSynchronize();
     auto end = std::chrono::high_resolution_clock::now();
 
-    checkCuda(cudaDeviceSynchronize(), "a7a");
+   // checkCuda(cudaDeviceSynchronize(), "a7a");
 
 
     std::cout << "Total elapsed time: ";
     std::cout << (double)(std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / (double)1000000000) << "s" << std::endl;
-    checkCuda(cudaDeviceSynchronize(), "a7b");
+  //  checkCuda(cudaDeviceSynchronize(), "a7b");
 
 
     size_t sizeMinMax = sizeof(unsigned int) * 20;
     cudaMemcpy(minMaxesCPU, fbArgs.metaData.minMaxes, sizeMinMax, cudaMemcpyDeviceToHost);
-    checkCuda(cudaDeviceSynchronize(), "a7c");
+   // checkCuda(cudaDeviceSynchronize(), "a7c");
 
     printf("HD: %d \n", minMaxesCPU[13]);
     printf("debug sum : %d \n", minMaxesCPU[15]);
 
 
-    printf("max iter numb %d  \n", FindMax(forFullBoolPrepArgs.resultListPointerIterNumb, (minMaxesCPU[7] + minMaxesCPU[8] + 50)));
+    //printf("max iter numb %d  \n", FindMax(forFullBoolPrepArgs.resultListPointerIterNumb, (minMaxesCPU[7] + minMaxesCPU[8] + 50)));
 
 
-    checkCuda(cudaDeviceSynchronize(), "a8");
 
-    if (resultToCopy) {
-        free(forFullBoolPrepArgs.resultListPointerMeta);
-        free(forFullBoolPrepArgs.resultListPointerLocalCPU);
-        free(forFullBoolPrepArgs.resultListPointerIterNumb);
-    }
-
-    checkCuda(cudaDeviceSynchronize(), "a9");
-
-    // printf("debug sum : %d \n", minMaxesCPU[15]);
+    syncErr = cudaGetLastError();
+    asyncErr = cudaDeviceSynchronize();
+    if (syncErr != cudaSuccess) printf("Error in syncErr: %s\n", cudaGetErrorString(syncErr));
+    if (asyncErr != cudaSuccess) printf("Error in asyncErr: %s\n", cudaGetErrorString(asyncErr));
 
 
-     // freeee
-    free(onlyBladderBoolFlat);
-    free(onlyLungsBoolFlat);
-
-
-    checkCuda(cudaDeviceSynchronize(), "a10");
+    
+    
+    
+    cudaStreamDestroy(stream1);
 
 
 }
@@ -2810,9 +2799,9 @@ int HausdorffDistance::computeDistance(Volume* img1, Volume* img2) {
 
 
     //copying the dimensions to the GPU
-    cudaMemcpyToSymbolAsync(WIDTH, &width, sizeof(width),0);
-    cudaMemcpyToSymbolAsync(HEIGHT, &height, sizeof(height),0);
-    cudaMemcpyToSymbolAsync(DEPTH, &depth, sizeof(depth),0);
+    cudaMemcpyToSymbolAsync(WIDTH, &width, sizeof(width), 0);
+    cudaMemcpyToSymbolAsync(HEIGHT, &height, sizeof(height), 0);
+    cudaMemcpyToSymbolAsync(DEPTH, &depth, sizeof(depth), 0);
 
 
     //allocating the input images on the GPU
@@ -2893,48 +2882,6 @@ inline void HausdorffDistance::print(cudaError_t error, char* msg) {
 
 
 
-/*
-benchmark for original code from  https://github.com/Oyatsumi/HausdorffDistanceComparison
-*/
-void benchmarkOliviera(bool* onlyBladderBoolFlat, bool* onlyLungsBoolFlat, const int WIDTH, const int HEIGHT
-    , const int DEPTH) {
-    Volume img1 = Volume(WIDTH, HEIGHT, DEPTH), img2 = Volume(WIDTH, HEIGHT, DEPTH);
-
-    for (int x = 0; x < WIDTH; x++) {
-        for (int y = 0; y < HEIGHT; y++) {
-            for (int z = 0; z < DEPTH; z++) {
-                img1.setVoxelValue(onlyLungsBoolFlat[x + y * WIDTH + z * WIDTH * HEIGHT], x, y, z);
-                img2.setVoxelValue(onlyBladderBoolFlat[x + y * WIDTH + z * WIDTH * HEIGHT], x, y, z);
-            }
-        }
-    }
-
-    auto begin = std::chrono::high_resolution_clock::now();
-    HausdorffDistance* hd = new HausdorffDistance();
-    cudaDeviceSynchronize();
-
-    int dist = (*hd).computeDistance(&img1, &img2);
-    cudaDeviceSynchronize();
-
-    auto end = std::chrono::high_resolution_clock::now();
-
-    std::cout << "Total elapsed time: ";
-    std::cout << (double)(std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / (double)1000000000) << "s" << std::endl;
-
-    printf("HD: %d \n", dist);
-
-    //freeing memory
-    img1.dispose(); img2.dispose();
-
-    //Datasize: 216530944
-   //Datasize : 216530944
-    //Total elapsed time : 2.62191s
-    //HD : 234
-
-}
-
-
-
 //
 //int main(void) {
 //
@@ -2965,48 +2912,139 @@ void benchmarkOliviera(bool* onlyBladderBoolFlat, bool* onlyLungsBoolFlat, const
 //
 
 
+//
+//
+
+/*
+benchmark for original code from  https://github.com/Oyatsumi/HausdorffDistanceComparison
+*/
+void benchmarkOliviera(torch::Tensor onlyBladderBoolFlatA,
+    torch::Tensor onlyLungsBoolFlatA,  int WIDTH,  int HEIGHT
+    ,  int DEPTH) {
+  
+    printf("O 1  \n");
+    //just originally it started for cpu so ...
+
+    int lenn = WIDTH * HEIGHT * DEPTH;
+    size_t sizee = sizeof(bool) * lenn;
 
 
 
+    bool* onlyBladderBoolFlat = (bool*)calloc(lenn, sizeof(bool));
+    bool* onlyLungsBoolFlat = (bool*)calloc(lenn, sizeof(bool));
+
+    cudaMemcpy(onlyBladderBoolFlat, onlyBladderBoolFlatA.data_ptr(), sizee, cudaMemcpyDeviceToHost);
+    cudaMemcpy(onlyLungsBoolFlat, onlyLungsBoolFlatA.data_ptr(), sizee, cudaMemcpyDeviceToHost);
 
 
+    //auto onlyBladderBoolFlatA.data_ptr()
 
 
+    //bool* onlyBladderBoolFlat = (bool*)onlyBladderBoolFlatA.to(torch::kCPU).data_ptr();
+    //bool* onlyLungsBoolFlat = (bool*)onlyLungsBoolFlatA.to(torch::kCPU).data_ptr();
+
+  printf("O 2  %d   %d \n", onlyBladderBoolFlat[1], onlyLungsBoolFlat[1]);
 
 
+    Volume img1 = Volume(WIDTH, HEIGHT, DEPTH), img2 = Volume(WIDTH, HEIGHT, DEPTH);
 
-
-
-namespace {
-
-    template <typename scalar_t>
-    __global__ void lltm_cuda_forward_kernel(
-        torch::PackedTensorAccessor<scalar_t, 1, torch::RestrictPtrTraits, size_t> input,
-        torch::PackedTensorAccessor<scalar_t, 1, torch::RestrictPtrTraits, size_t> output) {
-        //batch index
-        // column index
-        const int c = blockIdx.x * blockDim.x + threadIdx.x;
-        output[c] = input[c]*2;
+    for (int x = 0; x < WIDTH; x++) {
+        for (int y = 0; y < HEIGHT; y++) {
+            for (int z = 0; z < DEPTH; z++) {
+                img1.setVoxelValue(onlyLungsBoolFlat[x + y * WIDTH + z * WIDTH * HEIGHT], x, y, z);
+                img2.setVoxelValue(onlyBladderBoolFlat[x + y * WIDTH + z * WIDTH * HEIGHT], x, y, z);
+            }
+        }
     }
 
-} // namespace
-
-std::vector<torch::Tensor> lltm_cuda_forward(
-    torch::Tensor input,
-    torch::Tensor output) {
- 
-    const int threads = 1024;
-    const dim3 blocks(10);
+    printf("O 3  \n");
 
 
-    // from https://github.com/pytorch/pytorch/blob/61d6c4386459441710fb4cfa2929a3f77e95e5f7/aten/src/ATen/Dispatch.h
-    AT_DISPATCH_ALL_TYPES(input.type(), "lltm_forward_cuda", ([&] {
-            lltm_cuda_forward_kernel<scalar_t> << <blocks, threads >> > (
-                input.packed_accessor<scalar_t, 1, torch::RestrictPtrTraits, size_t>(),
-                output.packed_accessor<scalar_t, 1, torch::RestrictPtrTraits, size_t>());
-            }));
+    auto begin = std::chrono::high_resolution_clock::now();
+    HausdorffDistance* hd = new HausdorffDistance();
+    printf("O 4  \n");
+
+    cudaDeviceSynchronize();
+
+    int dist = (*hd).computeDistance(&img1, &img2);
+    cudaDeviceSynchronize();
+    printf("O 5  \n");
 
 
-    return { input,output };
+    auto end = std::chrono::high_resolution_clock::now();
+
+    printf("O 6  \n");
+
+
+    std::cout << "Total elapsed time: ";
+    std::cout << (double)(std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / (double)1000000000) << "s" << std::endl;
+
+    printf("HD: %d \n", dist);
+
+    printf("O 7  \n");
+
+
+    //freeing memory
+    img1.dispose(); img2.dispose();
+
+    //Datasize: 216530944
+   //Datasize : 216530944
+    //Total elapsed time : 2.62191s
+    //HD : 234
+
 }
+
+
+
+//    modified  from https://github.com/pytorch/pytorch/blob/61d6c4386459441710fb4cfa2929a3f77e95e5f7/aten/src/ATen/Dispatch.h
+#define AT_DISPATCH_ALL_TYPESWithBool(TYPE, NAME, ...)                               \
+  [&] {                                                                      \
+    const auto& the_type = TYPE;                                             \
+    /* don't use TYPE again in case it is an expensive or side-effect op  */ \
+    at::ScalarType _st = ::detail::scalar_type(the_type);                    \
+    RECORD_KERNEL_FUNCTION_DTYPE(NAME, _st);                                 \
+    switch (_st) {                                                              \
+      AT_PRIVATE_CASE_TYPE(NAME, at::ScalarType::Byte, uint8_t, __VA_ARGS__)    \
+      AT_PRIVATE_CASE_TYPE(NAME, at::ScalarType::Char, int8_t, __VA_ARGS__)     \
+      AT_PRIVATE_CASE_TYPE(NAME, at::ScalarType::Double, double, __VA_ARGS__)   \
+      AT_PRIVATE_CASE_TYPE(NAME, at::ScalarType::Float, float, __VA_ARGS__)     \
+      AT_PRIVATE_CASE_TYPE(NAME, at::ScalarType::Int, int32_t, __VA_ARGS__)     \
+      AT_PRIVATE_CASE_TYPE(NAME, at::ScalarType::Long, int64_t, __VA_ARGS__)    \
+      AT_PRIVATE_CASE_TYPE(NAME, at::ScalarType::Short, int16_t, __VA_ARGS__)   \
+      AT_PRIVATE_CASE_TYPE(NAME, at::ScalarType::Bool, bool, __VA_ARGS__)   \
+      default:                                                                  \
+        AT_ERROR(#NAME, " not implemented for '", toString(_st), "'");          \
+    }                                                                           \
+  }()
+
+
+
+
+void lltm_cuda_forward(
+    torch::Tensor input,
+    torch::Tensor output, int xDim, int yDim, int zDim) {
+
+
+
+
+    benchmarkMitura(input, output, xDim, yDim, zDim);
+    benchmarkOliviera(input, output, xDim, yDim, zDim);
+
+//    // from https://github.com/pytorch/pytorch/blob/61d6c4386459441710fb4cfa2929a3f77e95e5f7/aten/src/ATen/Dispatch.h
+//    AT_DISPATCH_ALL_TYPESWithBool(input.type(), "lltm_forward_cuda", ([&] {
+//        //benchmarkOliviera(input, output, xDim, yDim, zDim);
+//        benchmarkMitura( input, output   , xDim, yDim, zDim);
+//
+//        //benchmarkMitura(
+//        //    inputB.packed_accessor<scalar_t, 1, torch::RestrictPtrTraits, size_t>(),
+//        //    outputB.packed_accessor<scalar_t, 1, torch::RestrictPtrTraits, size_t>()
+//        //    , sizz[0], sizz[1], sizz[2]);
+//
+//        //lltm_cuda_forward_kernel<scalar_t> << <blocks, threads >> > (
+///*                input.packed_accessor<scalar_t, 1, torch::RestrictPtrTraits, size_t>(),
+//                output.packed_accessor<scalar_t, 1, torch::RestrictPtrTraits, size_t>());*/
+//        }));
+
+    ; printf(" aaafter dispatch ");
+};
 

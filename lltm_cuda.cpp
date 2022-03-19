@@ -4,9 +4,9 @@
 
 // CUDA forward declarations
 
-std::vector<torch::Tensor> lltm_cuda_forward(
+void lltm_cuda_forward(
     torch::Tensor input,
-    torch::Tensor output);
+    torch::Tensor output, int xDim, int yDim, int zDim);
 
 // C++ interface
 
@@ -15,15 +15,19 @@ std::vector<torch::Tensor> lltm_cuda_forward(
 #define CHECK_CONTIGUOUS(x) AT_ASSERTM(x.is_contiguous(), #x " must be contiguous")
 #define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
 
-std::vector<torch::Tensor> lltm_forward(
+void lltm_forward(
     torch::Tensor input,
-    torch::Tensor output) {
+    torch::Tensor output, int xDim, int yDim, int zDim) {
 
     CHECK_INPUT(input);
     CHECK_INPUT(output);
 
+    printf(" \n beefore lltm_cuda_forward in cpp \n");
 
-    return lltm_cuda_forward(input, output);
+    lltm_cuda_forward(input, output, xDim, yDim, zDim);
+
+    printf(" \n aaafter lltm_cuda_forward in cpp \n");
+
 }
 
 
