@@ -51,8 +51,20 @@ import argparse
 import numpy as np
 import torch
 
+
+
+from torch.utils.cpp_extension import load
+lltm_cuda = load('lltm_cuda', ['lltm_cuda.cpp', 'lltm_cuda_kernel.cu'], verbose=True)
+help(lltm_cuda)
+
+print(" aaaaaaaaaaaaaa\n  ")
+
+
 import lltm_baseline
 import lltm
+
+import lltm_cuda
+device = torch.device("cuda")
 
 
 def benchmarkMitura():
@@ -96,11 +108,22 @@ def benchmarkMitura():
     ]
     check_ds = Dataset(data=data_dicts, transform=val_transforms)
     check_loader = DataLoader(check_ds, batch_size=1)
+    print(" cccccccccccccc\n  ")
+
 
     for dat in check_loader:
         print("**********************   \n  ")
-        pass
+        labelBoolTensorA =torch.where( dat['label']==1, 1, 0).bool().to(device)
+        summA= torch.sum(labelBoolTensorA)
+        labelBoolTensorB =torch.where( dat['label']==2, 1, 0).bool().to(device)
+        summB= torch.sum(labelBoolTensorB)
+        print(summA )
+        print(" \n  ")
+        print(summB )
+        print(" \n  ")
+        #lltm_cuda.forwardB(labelBoolTensorA, labelBoolTensorB)
 
+        pass
 
 benchmarkMitura()
 
@@ -115,23 +138,22 @@ benchmarkMitura()
 
 
 
-from torch.utils.cpp_extension import load
-lltm_cuda = load(
-    'lltm_cuda', ['lltm_cuda.cpp', 'lltm_cuda_kernel.cu'], verbose=True)
-help(lltm_cuda)
+#from torch.utils.cpp_extension import load
+#lltm_cuda = load(
+#    'lltm_cuda', ['lltm_cuda.cpp', 'lltm_cuda_kernel.cu'], verbose=True)
+#help(lltm_cuda)
 
 
 
-import lltm_cuda
-device = torch.device("cuda")
 
-kwargs = {'dtype': torch.float64,
-          'device': device,
-          'requires_grad': True}
-X = torch.ones(5, dtype= torch.int32).to(device)
-Y = torch.ones(5,dtype= torch.int32).to(device)
-lltm_cuda.forwardB(X, Y)
 
-#check_forward(variables, True, True)
+#kwargs = {'dtype': torch.float64,
+#          'device': device,
+#          'requires_grad': True}
+#X = torch.ones(5, dtype= torch.int32).to(device)
+#Y = torch.ones(5,dtype= torch.int32).to(device)
+#lltm_cuda.forwardB(X, Y)
 
-print("x = {}".format(Y.flatten()))
+##check_forward(variables, True, True)
+
+#print("x = {}".format(Y.flatten()))
