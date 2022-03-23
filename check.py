@@ -94,19 +94,23 @@ def benchmarkMitura():
     ]
     check_ds = Dataset(data=data_dicts, transform=val_transforms)
     check_loader = DataLoader(check_ds, batch_size=1)
-    print(" cccccccccccccc\n  ")
 
-
+    index=0;
     for dat in check_loader:
         print("**********************   \n  ")
-        sizz = dat['image'].shape
+        index+=1
+        if(True):
+            sizz = dat['image'].shape
         
-        labelBoolTensorA =  torch.flatten(torch.where( dat['label']==1, 1, 0).bool().to(device))
-        summA= torch.sum(labelBoolTensorA)
-        labelBoolTensorB =torch.where( dat['label']==2, 1, 0).bool().to(device)
-        summB= torch.flatten(torch.sum(labelBoolTensorB))
-        if(summA>0 and summB>0):
-            lltm_cuda.forwardB(labelBoolTensorA, labelBoolTensorB,sizz[2], sizz[3],sizz[4])
+            labelBoolTensorA =  torch.flatten(torch.where( dat['label']==1, 1, 0).bool().to(device))
+            summA= torch.sum(labelBoolTensorA)
+            labelBoolTensorB =torch.where( dat['label']==2, 1, 0).bool().to(device)
+            summB= torch.flatten(torch.sum(labelBoolTensorB))
+            print(summA)
+            print(summB)
+
+            if(summA.item()>0 and summB.item()>0):
+                lltm_cuda.forwardB(labelBoolTensorA, labelBoolTensorB,sizz[2], sizz[3],sizz[4])
 
 
 benchmarkMitura()

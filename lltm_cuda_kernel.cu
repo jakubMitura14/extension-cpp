@@ -485,13 +485,7 @@ __global__ void getMinMaxes(ForBoolKernelArgs<TYO> fbArgs
 
 
     if ((threadIdx.x == 1) && (threadIdx.y == 0) && (blockIdx.x == 0)) {
-        printf("in minMaxes beg  totalMetaLength  %d Nx %d Ny %d Nz %d \n"
-            , fbArgs.metaData.totalMetaLength
-            , fbArgs.Nx
-            , fbArgs.Ny
-            , fbArgs.Nz
-        
-        );
+
 
     //    if (blockIdx.x == 0) {
     //        printf(" dims meta in min maxes  kernel Meta X %d MetaY %d metaZ %d dbXSize %d dbYsize %d dbZsize %d minX %d minY %d minZ \n "
@@ -696,13 +690,6 @@ __global__ void boolPrepareKernel(ForBoolKernelArgs<TYO> fbArgs
     if ((threadIdx.x == 4) && (threadIdx.y == 1)) {
         anyInSegm[1] = false;
 
-        if (blockIdx.x == 0) {
-            printf("in bool kernel  dims meta in bool kernel Meta X %d MetaY %d metaZ %d dbXSize %d dbYsize %d dbZsize %d minX %d minY %d minZ \n "
-                , metaData.metaXLength, metaData.MetaYLength, metaData.MetaZLength
-                , fbArgs.dbXLength, fbArgs.dbYLength, fbArgs.dbZLength
-                , metaData.minX, metaData.minY, metaData.minZ
-            );
-        }
 
     };
 
@@ -1417,12 +1404,8 @@ inline uint32_t isBitAtCPU(const uint32_t& numb, const int pos) {
     d) also given any positive entry we set block as to be activated simple sum reduction should be sufficient
     e) sync grid
 */
-
-
-
-
 template <typename TKKI>
-__global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
+inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
 
 
@@ -1442,7 +1425,7 @@ __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
     */
     // __shared__ uint32_t mainShmem[lengthOfMainShmem];
     __shared__ uint32_t mainShmem[lengthOfMainShmem];
-    //    cuda::associate_access_property(&mainShmem, cuda::access_property::shared{});
+    //cuda::associate_access_property(&mainShmem, cuda::access_property::shared{});
 
 
 
@@ -1611,11 +1594,6 @@ __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                 fpFnLocCounter[0] = 0;
             };
 
-
-            if (threadIdx.x == 10 && threadIdx.y == 2) {// this is how it is encoded wheather it is gold or segm block
-
-                lastI[0] = UINT32_MAX;
-            };
 
 
             if (threadIdx.x == 0 && threadIdx.y == 0) {
@@ -2010,18 +1988,12 @@ __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                                     ////// IMPORTANT for some reason in order to make it work resultfnOffset and resultfnOffset swith places
                                     if (isGoldForLocQueue[i]) {
                                         mainShmem[begSecRegShmem + threadIdx.x + threadIdx.y * 32] = uint32_t(atomicAdd_block(&(localFpConter[0]), 1) + localBlockMetaData[(i & 1) * 20 + 6] + localBlockMetaData[(i & 1) * 20 + 3]);
-                                        //TODO remove
-                                        //atomicAdd_block(&(blockFpConter[0]), 1);
 
                                     }
                                     else {
 
                                         mainShmem[begSecRegShmem + threadIdx.x + threadIdx.y * 32] = uint32_t(atomicAdd_block(&(localFnConter[0]), 1) + localBlockMetaData[(i & 1) * 20 + 5] + localBlockMetaData[(i & 1) * 20 + 4]);
 
-                                        //TODO remove
-                                        //atomicAdd_block(&(blockFnConter[0]), 1);
-
-                                        //    printf("local fn counter add \n");
 
                                     };
                                     //   add results to global memory    
@@ -2134,7 +2106,6 @@ __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                     atomicAdd(&(fbArgs.minMaxes[11]), (blockFnConter[0]));
                 }
             };
-            grid.sync();
 
             // in first thread block we zero work queue counter
             if (threadIdx.x == 2 && threadIdx.y == 0) {
@@ -2328,6 +2299,11 @@ __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
 
 
+
+
+
+
+
 /*
 get data from occupancy calculator API used to get optimal number of thread blocks and threads per thread block
 */
@@ -2374,7 +2350,7 @@ inline occupancyCalcData getOccupancy() {
     res.warpsNumbForMainPass = blockSize / 32;
     res.blockForMainPass = minGridSize;
 
-    // res.blockForMainPass = 5;
+    // res.blockForMainPass = 1;
      //res.blockForMainPass = 136;
      //res.warpsNumbForMainPass = 8;
 
@@ -2420,7 +2396,6 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
 
     ForBoolKernelArgs<T> fbArgs = getArgsForKernel<T>(fFArgs, occData.warpsNumbForMainPass, occData.blockForMainPass, WIDTH, HEIGHT, DEPTH, stream);
 
-   // checkCuda(cudaDeviceSynchronize(), "a1");
 
 
 
@@ -2431,8 +2406,8 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
 
 
 
-
-   // checkCuda(cudaDeviceSynchronize(), "a1b");
+    //printf("ccc1b ");
+   //checkCuda(cudaDeviceSynchronize(), "a1b");
 
     fbArgs.metaData = allocateMemoryAfterMinMaxesKernel(fbArgs, fFArgs, stream);
     
@@ -2442,7 +2417,8 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
         , segmArrPointer
         , fbArgs.minMaxes);
 
-   // checkCuda(cudaDeviceSynchronize(), "a2222b");
+    //printf("ccc2b ");
+    //checkCuda(cudaDeviceSynchronize(), "a2222b");
     //AT_DISPATCH_ALL_TYPES(fFArgs.goldArr.type(), "boolPrepareKernel", ([&] {
     //boolPrepareKernel<scalar_t> << <occData.blockSizeFoboolPrepareKernel, dim3(32, occData.warpsNumbForboolPrepareKernel) >> > (
     //    fbArgs, fbArgs.metaData, fbArgs.origArrsPointer, fbArgs.metaDataArrPointer
@@ -2454,23 +2430,26 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
    //checkCuda(cudaDeviceSynchronize(), "a3");
 
     int fpPlusFn = allocateMemoryAfterBoolKernel(fbArgs, fFArgs, stream);
+   // printf("ccc4");
 
-    //checkCuda(cudaDeviceSynchronize(), "a4");
+  // checkCuda(cudaDeviceSynchronize(), "a4");
+  // printf("ccc5");
 
 
     firstMetaPrepareKernel << <occData.blockForFirstMetaPass, occData.theadsForFirstMetaPass >> > (fbArgs, fbArgs.metaData, fbArgs.minMaxes, fbArgs.workQueuePointer, fbArgs.origArrsPointer, fbArgs.metaDataArrPointer);
 
-   // checkCuda(cudaDeviceSynchronize(), "a5");
+  //  checkCuda(cudaDeviceSynchronize(), "a5");
+  //  printf("ccc6");
 
     void* kernel_args[] = { &fbArgs };
     cudaLaunchCooperativeKernel((void*)(mainPassKernel<int>), occData.blockForMainPass, dim3(32, occData.warpsNumbForMainPass), kernel_args);
 
-   // checkCuda(cudaDeviceSynchronize(), "a6");
+    //checkCuda(cudaDeviceSynchronize(), "a6");
 
-    if (resToSave) {
-        copyResultstoCPU(fbArgs, fFArgs, stream);
+    //if (resToSave) {
+    //    copyResultstoCPU(fbArgs, fFArgs, stream);
 
-    }
+    //}
 
     cudaFreeAsync(fbArgs.resultListPointerMeta, stream);
     cudaFreeAsync(fbArgs.resultListPointerLocal, stream);
@@ -2480,6 +2459,8 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
     cudaFreeAsync(fbArgs.metaDataArrPointer, stream);
     cudaFreeAsync(fbArgs.mainArrAPointer, stream);
     cudaFreeAsync(fbArgs.mainArrBPointer, stream);
+ //   printf("ccc7");
+
 
     return fbArgs;
 
@@ -2586,7 +2567,6 @@ void benchmarkMitura(torch::Tensor onlyBladderBoolFlat,
    // checkCuda(cudaDeviceSynchronize(), "a7c");
 
     printf("HD: %d \n", minMaxesCPU[13]);
-    printf("debug sum : %d \n", minMaxesCPU[15]);
 
 
     //printf("max iter numb %d  \n", FindMax(forFullBoolPrepArgs.resultListPointerIterNumb, (minMaxesCPU[7] + minMaxesCPU[8] + 50)));
@@ -2599,7 +2579,10 @@ void benchmarkMitura(torch::Tensor onlyBladderBoolFlat,
     if (asyncErr != cudaSuccess) printf("Error in asyncErr: %s\n", cudaGetErrorString(asyncErr));
 
 
-    
+    cudaFreeAsync(fbArgs.minMaxes, stream1);
+    //cudaFreeAsync(onlyBladderBoolFlat, stream1);
+    //cudaFreeAsync(onlyLungsBoolFlat, stream1);
+    cudaFreeAsync(minMaxesCPU, stream1);
     
     
     cudaStreamDestroy(stream1);
@@ -2979,7 +2962,8 @@ void benchmarkOliviera(torch::Tensor onlyBladderBoolFlatA,
 
     //freeing memory
     img1.dispose(); img2.dispose();
-
+    free(onlyBladderBoolFlat);
+    free(onlyLungsBoolFlat);
     //Datasize: 216530944
    //Datasize : 216530944
     //Total elapsed time : 2.62191s
@@ -3019,9 +3003,8 @@ void lltm_cuda_forward(
 
 
 
-
-    benchmarkMitura(input, output, xDim, yDim, zDim);
     benchmarkOliviera(input, output, xDim, yDim, zDim);
+    benchmarkMitura(input, output, xDim, yDim, zDim);
 
 //    // from https://github.com/pytorch/pytorch/blob/61d6c4386459441710fb4cfa2929a3f77e95e5f7/aten/src/ATen/Dispatch.h
 //    AT_DISPATCH_ALL_TYPESWithBool(input.type(), "lltm_forward_cuda", ([&] {
