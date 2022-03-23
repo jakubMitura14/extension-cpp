@@ -2580,9 +2580,9 @@ void benchmarkMitura(torch::Tensor onlyBladderBoolFlat,
 
 
     cudaFreeAsync(fbArgs.minMaxes, stream1);
-    //cudaFreeAsync(onlyBladderBoolFlat, stream1);
-    //cudaFreeAsync(onlyLungsBoolFlat, stream1);
-    cudaFreeAsync(minMaxesCPU, stream1);
+    ////cudaFreeAsync(onlyBladderBoolFlat, stream1);
+    ////cudaFreeAsync(onlyLungsBoolFlat, stream1);
+    free(minMaxesCPU);
     
     
     cudaStreamDestroy(stream1);
