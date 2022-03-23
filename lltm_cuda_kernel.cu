@@ -2354,7 +2354,7 @@ inline occupancyCalcData getOccupancy() {
      //res.blockForMainPass = 136;
      //res.warpsNumbForMainPass = 8;
 
-    printf("warpsNumbForMainPass %d blockForMainPass %d  ", res.warpsNumbForMainPass, res.blockForMainPass);
+    //printf("warpsNumbForMainPass %d blockForMainPass %d  ", res.warpsNumbForMainPass, res.blockForMainPass);
     return res;
 }
 
@@ -2378,8 +2378,8 @@ https://codingbyexample.com/2020/09/25/cuda-graph-usage/
 #pragma once
 template <typename T>
 ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int WIDTH, const int HEIGHT, const int DEPTH, occupancyCalcData& occData,
-    cudaStream_t stream, bool resToSave = false) {
-
+    cudaStream_t stream, bool resToSave = false, float robustnessPercent=1.0) {
+    fFArgs.robustnessPercent = robustnessPercent;
     T* goldArrPointer = (T*)fFArgs.goldArr.data_ptr();
     T* segmArrPointer = (T*)fFArgs.segmArr.data_ptr();
 
@@ -2393,7 +2393,7 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
 
 
     fbArgs.metaData = allocateMemoryAfterMinMaxesKernel(fbArgs, fFArgs, stream);
-    
+    fbArgs.robustnessPercent = robustnessPercent;
     boolPrepareKernel << <occData.blockSizeFoboolPrepareKernel, dim3(32, occData.warpsNumbForboolPrepareKernel) >> > (
         fbArgs, fbArgs.metaData, fbArgs.origArrsPointer, fbArgs.metaDataArrPointer
         , goldArrPointer
@@ -2830,7 +2830,7 @@ inline void HausdorffDistance::print(cudaError_t error, char* msg) {
 /*
 benchmark for original code from  https://github.com/Oyatsumi/HausdorffDistanceComparison
 */
-void benchmarkOliviera(torch::Tensor goldStandardA,
+std::tuple<int, double> benchmarkOlivieraCUDA(torch::Tensor goldStandardA,
     torch::Tensor algoOutputA,  int WIDTH,  int HEIGHT
     ,  int DEPTH) {
   
@@ -2882,10 +2882,11 @@ void benchmarkOliviera(torch::Tensor goldStandardA,
 
 
 
-    std::cout << "Total elapsed time: ";
-    std::cout << (double)(std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / (double)1000000000) << "s" << std::endl;
+   // std::cout << "Total elapsed time: ";
+    double time = (double)(std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / (double)1000000000);
+    //std::cout << time << "s" << std::endl;
 
-    printf("HD: %d \n", dist);
+   // printf("HD: %d \n", dist);
 
 
 
@@ -2897,7 +2898,7 @@ void benchmarkOliviera(torch::Tensor goldStandardA,
    //Datasize : 216530944
     //Total elapsed time : 2.62191s
     //HD : 234
-
+    return { dist, time };
 }
 
 
@@ -2932,7 +2933,7 @@ void lltm_cuda_forward(
 
 
 
-    benchmarkOliviera(input, output, xDim, yDim, zDim);
+    //benchmarkOliviera(input, output, xDim, yDim, zDim);
     benchmarkMitura(input, output, xDim, yDim, zDim);
 
 
@@ -2945,7 +2946,7 @@ void lltm_cuda_forward(
 template <typename T>
 int getHausdorffDistance_CUDA_Generic(at::Tensor goldStandard,
     at::Tensor algoOutput
-    , int WIDTH, int HEIGHT, int DEPTH) {
+    , int WIDTH, int HEIGHT, int DEPTH, float robustnessPercent) {
     //TODO() use https ://pytorch.org/cppdocs/notes/tensor_cuda_stream.html
     cudaStream_t stream1;
     cudaStreamCreate(&stream1);
@@ -2963,9 +2964,11 @@ int getHausdorffDistance_CUDA_Generic(at::Tensor goldStandard,
 
     occupancyCalcData occData = getOccupancy<T>();
      
-    ForBoolKernelArgs<T> fbArgs = executeHausdoff(forFullBoolPrepArgs, WIDTH, HEIGHT, DEPTH, occData, stream1, false);
+    ForBoolKernelArgs<T> fbArgs = executeHausdoff(forFullBoolPrepArgs, WIDTH, HEIGHT, DEPTH, occData, stream1, false, robustnessPercent);
 
     size_t sizeMinMax = sizeof(unsigned int) * 20;
+    //making sure we have all resultsto copy on cpu
+    cudaDeviceSynchronize();
     cudaMemcpy(minMaxesCPU, fbArgs.metaData.minMaxes, sizeMinMax, cudaMemcpyDeviceToHost);
 
     int result = minMaxesCPU[13];
@@ -2975,6 +2978,7 @@ int getHausdorffDistance_CUDA_Generic(at::Tensor goldStandard,
 
 
     cudaStreamDestroy(stream1);
+    cudaDeviceSynchronize();
 
     return result;
 }
@@ -2982,12 +2986,13 @@ int getHausdorffDistance_CUDA_Generic(at::Tensor goldStandard,
 
 int getHausdorffDistance_CUDA(at::Tensor goldStandard,
     at::Tensor algoOutput
-    , int WIDTH, int HEIGHT, int DEPTH) {
+    , const int WIDTH,const  int HEIGHT,const  int DEPTH
+    ,const float robustnessPercent) {
 
     int res = 0;
 
     AT_DISPATCH_ALL_TYPESWithBool(goldStandard.type(), "getHausdorffDistance_CUDA", ([&] {
-        res= getHausdorffDistance_CUDA_Generic<scalar_t>(goldStandard, algoOutput, WIDTH, HEIGHT, DEPTH);
+        res= getHausdorffDistance_CUDA_Generic<scalar_t>(goldStandard, algoOutput, WIDTH, HEIGHT, DEPTH, robustnessPercent);
 
         }));
     return res;

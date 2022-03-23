@@ -110,8 +110,16 @@ def benchmarkMitura():
             print(summB)
 
             if(summA.item()>0 and summB.item()>0):
-                lltm_cuda.forwardB(labelBoolTensorA, labelBoolTensorB,sizz[2], sizz[3],sizz[4])
+                #lltm_cuda.forwardB(labelBoolTensorA, labelBoolTensorB,sizz[2], sizz[3],sizz[4])
+                
+                resNotRobust= lltm_cuda.getHausdorffDistance(labelBoolTensorA, labelBoolTensorB,sizz[2], sizz[3],sizz[4],1.0)
+                
+                resRobust = lltm_cuda.getHausdorffDistance(labelBoolTensorA, labelBoolTensorB,sizz[2], sizz[3],sizz[4],0.95)
 
+                #first entry result second entry time
+                olivieraTuple = lltm_cuda.benchmarkOlivieraCUDA(labelBoolTensorA, labelBoolTensorB,sizz[2], sizz[3],sizz[4])
+
+                print("not robust %s robust %s oliviera %s " % (resNotRobust, resRobust ,olivieraTuple[0] ) )
 
 benchmarkMitura()
 

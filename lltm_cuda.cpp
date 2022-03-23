@@ -10,9 +10,15 @@ void lltm_cuda_forward(
 
 int getHausdorffDistance_CUDA(
     torch::Tensor goldStandard,
-    torch::Tensor algoOutput, const  int xDim, const int yDim, const int zDim);
+    torch::Tensor algoOutput
+    , const  int xDim, const int yDim
+    , const int zDim,const float robustnessPercent);
 
-
+std::tuple<int, double>  benchmarkOlivieraCUDA(
+    torch::Tensor goldStandard,
+    torch::Tensor algoOutput
+    , const  int xDim, const int yDim
+    , const int zDim);
 
 // C++ interface
 
@@ -23,7 +29,8 @@ int getHausdorffDistance_CUDA(
 
 void lltm_forward(
     torch::Tensor input,
-    torch::Tensor output, int xDim, int yDim, int zDim) {
+    torch::Tensor output
+    , const int xDim, const int yDim, const int zDim) {
 
     CHECK_INPUT(input);
     CHECK_INPUT(output);
@@ -34,15 +41,18 @@ void lltm_forward(
 
 }
 
-void getHausdorffDistance(
-    torch::Tensor input,
-    torch::Tensor output, const  int xDim, const int yDim, const int zDim) {
+int getHausdorffDistance(
+    torch::Tensor goldStandard,
+    torch::Tensor algoOutput
+    , const  int xDim, const int yDim, const int zDim
+    , const float robustnessPercent=1.0
+) {
 
-    CHECK_INPUT(input);
-    CHECK_INPUT(output);
+    CHECK_INPUT(goldStandard);
+    CHECK_INPUT(algoOutput);
 
 
-    getHausdorffDistance_CUDA(input, output, xDim, yDim, zDim);
+   return  getHausdorffDistance_CUDA(goldStandard, algoOutput, xDim, yDim, zDim, robustnessPercent);
 
 
 }
@@ -50,7 +60,19 @@ void getHausdorffDistance(
 
 
 
+std::tuple<int, double>  benchmarkOlivieraCUDAOnlyBool(
+    torch::Tensor goldStandard,
+    torch::Tensor algoOutput
+    , const  int xDim, const int yDim
+    , const int zDim) {
+    return  benchmarkOlivieraCUDA(goldStandard, algoOutput, xDim, yDim, zDim);
+
+
+}
+
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("forwardB", &lltm_forward, "LLTM forward (CUDA)");
     m.def("getHausdorffDistance", &getHausdorffDistance, "Basic version of Hausdorff distance");
+    m.def("benchmarkOlivieraCUDA", &benchmarkOlivieraCUDA, "Algorithm by Oliviera - just for comparison sake - accept only boolean arrays  ");
 }
