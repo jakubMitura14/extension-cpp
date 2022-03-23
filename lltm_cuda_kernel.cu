@@ -2380,24 +2380,10 @@ template <typename T>
 ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int WIDTH, const int HEIGHT, const int DEPTH, occupancyCalcData& occData,
     cudaStream_t stream, bool resToSave = false) {
 
-    // For Graph
-    //cudaStream_t streamForGraph;
-    //cudaGraph_t graph;
-    //std::vector<cudaGraphNode_t> nodeDependencies;
-    //cudaGraphNode_t memcpyNode, kernelNode;
-    //cudaKernelNodeParams kernelNodeParams = { 0 };
-    //  cudaMemcpyParams memcpyParams = { 0 };
-
-
     T* goldArrPointer = (T*)fFArgs.goldArr.data_ptr();
     T* segmArrPointer = (T*)fFArgs.segmArr.data_ptr();
 
-
-
-    ForBoolKernelArgs<T> fbArgs = getArgsForKernel<T>(fFArgs, occData.warpsNumbForMainPass, occData.blockForMainPass, WIDTH, HEIGHT, DEPTH, stream);
-
-
-
+        ForBoolKernelArgs<T> fbArgs = getArgsForKernel<T>(fFArgs, occData.warpsNumbForMainPass, occData.blockForMainPass, WIDTH, HEIGHT, DEPTH, stream);
 
     getMinMaxes << <occData.blockSizeForMinMax, dim3(32, occData.warpsNumbForMinMax) >> > (fbArgs, fbArgs.minMaxes
         , goldArrPointer
@@ -2405,9 +2391,6 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
         , fbArgs.metaData);
 
 
-
-    //printf("ccc1b ");
-   //checkCuda(cudaDeviceSynchronize(), "a1b");
 
     fbArgs.metaData = allocateMemoryAfterMinMaxesKernel(fbArgs, fFArgs, stream);
     
@@ -2417,39 +2400,19 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
         , segmArrPointer
         , fbArgs.minMaxes);
 
-    //printf("ccc2b ");
-    //checkCuda(cudaDeviceSynchronize(), "a2222b");
-    //AT_DISPATCH_ALL_TYPES(fFArgs.goldArr.type(), "boolPrepareKernel", ([&] {
-    //boolPrepareKernel<scalar_t> << <occData.blockSizeFoboolPrepareKernel, dim3(32, occData.warpsNumbForboolPrepareKernel) >> > (
-    //    fbArgs, fbArgs.metaData, fbArgs.origArrsPointer, fbArgs.metaDataArrPointer
-    //    , fFArgs.goldArr.packed_accessor<scalar_t, 1, torch::RestrictPtrTraits, size_t>()
-    //    , fFArgs.segmArr.packed_accessor<scalar_t, 1, torch::RestrictPtrTraits, size_t>()
-    //    , fbArgs.minMaxes);
-    //}));
-
-   //checkCuda(cudaDeviceSynchronize(), "a3");
 
     int fpPlusFn = allocateMemoryAfterBoolKernel(fbArgs, fFArgs, stream);
-   // printf("ccc4");
 
-  // checkCuda(cudaDeviceSynchronize(), "a4");
-  // printf("ccc5");
 
 
     firstMetaPrepareKernel << <occData.blockForFirstMetaPass, occData.theadsForFirstMetaPass >> > (fbArgs, fbArgs.metaData, fbArgs.minMaxes, fbArgs.workQueuePointer, fbArgs.origArrsPointer, fbArgs.metaDataArrPointer);
 
-  //  checkCuda(cudaDeviceSynchronize(), "a5");
-  //  printf("ccc6");
+
 
     void* kernel_args[] = { &fbArgs };
     cudaLaunchCooperativeKernel((void*)(mainPassKernel<int>), occData.blockForMainPass, dim3(32, occData.warpsNumbForMainPass), kernel_args);
 
-    //checkCuda(cudaDeviceSynchronize(), "a6");
 
-    //if (resToSave) {
-    //    copyResultstoCPU(fbArgs, fFArgs, stream);
-
-    //}
 
     cudaFreeAsync(fbArgs.resultListPointerMeta, stream);
     cudaFreeAsync(fbArgs.resultListPointerLocal, stream);
@@ -2459,7 +2422,6 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
     cudaFreeAsync(fbArgs.metaDataArrPointer, stream);
     cudaFreeAsync(fbArgs.mainArrAPointer, stream);
     cudaFreeAsync(fbArgs.mainArrBPointer, stream);
- //   printf("ccc7");
 
 
     return fbArgs;
@@ -2515,11 +2477,11 @@ T FindMax(T* arr, size_t n)
 }
 
 
-//void benchmarkMitura(torch::PackedTensorAccessor<scalar_t, 1, at::RestrictPtrTraits, size_t> onlyBladderBoolFlat,
-//    torch::PackedTensorAccessor<scalar_t, 1, at::RestrictPtrTraits, size_t> onlyLungsBoolFlat, const int WIDTH, const int HEIGHT, const int DEPTH, cudaStream_t stream1
+//void benchmarkMitura(torch::PackedTensorAccessor<scalar_t, 1, at::RestrictPtrTraits, size_t> goldStandard,
+//    torch::PackedTensorAccessor<scalar_t, 1, at::RestrictPtrTraits, size_t> algoOutput, const int WIDTH, const int HEIGHT, const int DEPTH, cudaStream_t stream1
 
-void benchmarkMitura(torch::Tensor onlyBladderBoolFlat,
-    torch::Tensor onlyLungsBoolFlat
+void benchmarkMitura(torch::Tensor goldStandard,
+    torch::Tensor algoOutput
     , const int WIDTH, const int HEIGHT, const int DEPTH) {
 
     cudaError_t syncErr;
@@ -2537,8 +2499,8 @@ void benchmarkMitura(torch::Tensor onlyBladderBoolFlat,
     ForFullBoolPrepArgs<bool> forFullBoolPrepArgs;
     forFullBoolPrepArgs.metaData = metaData;
     forFullBoolPrepArgs.numberToLookFor = true;
-    forFullBoolPrepArgs.goldArr = onlyBladderBoolFlat;// get3dArrCPU(onlyBladderBoolFlat.packed_accessor32<bool, 1, torch::RestrictPtrTraits>(), WIDTH, HEIGHT, DEPTH);
-    forFullBoolPrepArgs.segmArr = onlyLungsBoolFlat;//get3dArrCPU(onlyLungsBoolFlat.packed_accessor32<bool, 1, torch::RestrictPtrTraits>(), WIDTH, HEIGHT, DEPTH);
+    forFullBoolPrepArgs.goldArr = goldStandard;// get3dArrCPU(goldStandard.packed_accessor32<bool, 1, torch::RestrictPtrTraits>(), WIDTH, HEIGHT, DEPTH);
+    forFullBoolPrepArgs.segmArr = algoOutput;//get3dArrCPU(algoOutput.packed_accessor32<bool, 1, torch::RestrictPtrTraits>(), WIDTH, HEIGHT, DEPTH);
 
     occupancyCalcData occData = getOccupancy<bool>();
 
@@ -2580,8 +2542,8 @@ void benchmarkMitura(torch::Tensor onlyBladderBoolFlat,
 
 
     cudaFreeAsync(fbArgs.minMaxes, stream1);
-    ////cudaFreeAsync(onlyBladderBoolFlat, stream1);
-    ////cudaFreeAsync(onlyLungsBoolFlat, stream1);
+    ////cudaFreeAsync(goldStandard, stream1);
+    ////cudaFreeAsync(algoOutput, stream1);
     free(minMaxesCPU);
     
     
@@ -2865,44 +2827,11 @@ inline void HausdorffDistance::print(cudaError_t error, char* msg) {
 
 
 
-//
-//int main(void) {
-//
-//
-//    cudaStream_t stream1;
-//    cudaStreamCreate(&stream1);
-//
-//    cudaStream_t stream2;
-//    cudaStreamCreate(&stream2);
-//
-//    for (int i = 0; i < 10; i++) {
-//        loadHDF(stream1);
-//    }
-//
-//    for (int i = 0; i < 10; i++) {
-//        loadHDFB(stream2);
-//    }
-//
-//
-//    //  testAll();
-//
-//
-//    return 0;  // successfully terminated
-//}
-//
-//
-//
-//
-
-
-//
-//
-
 /*
 benchmark for original code from  https://github.com/Oyatsumi/HausdorffDistanceComparison
 */
-void benchmarkOliviera(torch::Tensor onlyBladderBoolFlatA,
-    torch::Tensor onlyLungsBoolFlatA,  int WIDTH,  int HEIGHT
+void benchmarkOliviera(torch::Tensor goldStandardA,
+    torch::Tensor algoOutputA,  int WIDTH,  int HEIGHT
     ,  int DEPTH) {
   
     //just originally it started for cpu so ...
@@ -2912,18 +2841,18 @@ void benchmarkOliviera(torch::Tensor onlyBladderBoolFlatA,
 
 
 
-    bool* onlyBladderBoolFlat = (bool*)calloc(lenn, sizeof(bool));
-    bool* onlyLungsBoolFlat = (bool*)calloc(lenn, sizeof(bool));
+    bool* goldStandard = (bool*)calloc(lenn, sizeof(bool));
+    bool* algoOutput = (bool*)calloc(lenn, sizeof(bool));
 
-    cudaMemcpy(onlyBladderBoolFlat, onlyBladderBoolFlatA.data_ptr(), sizee, cudaMemcpyDeviceToHost);
-    cudaMemcpy(onlyLungsBoolFlat, onlyLungsBoolFlatA.data_ptr(), sizee, cudaMemcpyDeviceToHost);
-
-
-    //auto onlyBladderBoolFlatA.data_ptr()
+    cudaMemcpy(goldStandard, goldStandardA.data_ptr(), sizee, cudaMemcpyDeviceToHost);
+    cudaMemcpy(algoOutput, algoOutputA.data_ptr(), sizee, cudaMemcpyDeviceToHost);
 
 
-    //bool* onlyBladderBoolFlat = (bool*)onlyBladderBoolFlatA.to(torch::kCPU).data_ptr();
-    //bool* onlyLungsBoolFlat = (bool*)onlyLungsBoolFlatA.to(torch::kCPU).data_ptr();
+    //auto goldStandardA.data_ptr()
+
+
+    //bool* goldStandard = (bool*)goldStandardA.to(torch::kCPU).data_ptr();
+    //bool* algoOutput = (bool*)algoOutputA.to(torch::kCPU).data_ptr();
 
 
 
@@ -2932,8 +2861,8 @@ void benchmarkOliviera(torch::Tensor onlyBladderBoolFlatA,
     for (int x = 0; x < WIDTH; x++) {
         for (int y = 0; y < HEIGHT; y++) {
             for (int z = 0; z < DEPTH; z++) {
-                img1.setVoxelValue(onlyLungsBoolFlat[x + y * WIDTH + z * WIDTH * HEIGHT], x, y, z);
-                img2.setVoxelValue(onlyBladderBoolFlat[x + y * WIDTH + z * WIDTH * HEIGHT], x, y, z);
+                img1.setVoxelValue(algoOutput[x + y * WIDTH + z * WIDTH * HEIGHT], x, y, z);
+                img2.setVoxelValue(goldStandard[x + y * WIDTH + z * WIDTH * HEIGHT], x, y, z);
             }
         }
     }
@@ -2962,8 +2891,8 @@ void benchmarkOliviera(torch::Tensor onlyBladderBoolFlatA,
 
     //freeing memory
     img1.dispose(); img2.dispose();
-    free(onlyBladderBoolFlat);
-    free(onlyLungsBoolFlat);
+    free(goldStandard);
+    free(algoOutput);
     //Datasize: 216530944
    //Datasize : 216530944
     //Total elapsed time : 2.62191s
@@ -3006,20 +2935,60 @@ void lltm_cuda_forward(
     benchmarkOliviera(input, output, xDim, yDim, zDim);
     benchmarkMitura(input, output, xDim, yDim, zDim);
 
-//    // from https://github.com/pytorch/pytorch/blob/61d6c4386459441710fb4cfa2929a3f77e95e5f7/aten/src/ATen/Dispatch.h
-//    AT_DISPATCH_ALL_TYPESWithBool(input.type(), "lltm_forward_cuda", ([&] {
-//        //benchmarkOliviera(input, output, xDim, yDim, zDim);
-//        benchmarkMitura( input, output   , xDim, yDim, zDim);
-//
-//        //benchmarkMitura(
-//        //    inputB.packed_accessor<scalar_t, 1, torch::RestrictPtrTraits, size_t>(),
-//        //    outputB.packed_accessor<scalar_t, 1, torch::RestrictPtrTraits, size_t>()
-//        //    , sizz[0], sizz[1], sizz[2]);
-//
-//        //lltm_cuda_forward_kernel<scalar_t> << <blocks, threads >> > (
-///*                input.packed_accessor<scalar_t, 1, torch::RestrictPtrTraits, size_t>(),
-//                output.packed_accessor<scalar_t, 1, torch::RestrictPtrTraits, size_t>());*/
-//        }));
 
 };
 
+
+
+
+
+template <typename T>
+int getHausdorffDistance_CUDA_Generic(at::Tensor goldStandard,
+    at::Tensor algoOutput
+    , int WIDTH, int HEIGHT, int DEPTH) {
+    //TODO() use https ://pytorch.org/cppdocs/notes/tensor_cuda_stream.html
+    cudaStream_t stream1;
+    cudaStreamCreate(&stream1);
+ 
+    MetaDataCPU metaData;
+    size_t size = sizeof(unsigned int) * 20;
+    unsigned int* minMaxesCPU = (unsigned int*)malloc(size);
+    metaData.minMaxes = minMaxesCPU;
+
+    ForFullBoolPrepArgs<T> forFullBoolPrepArgs;
+    forFullBoolPrepArgs.metaData = metaData;
+    forFullBoolPrepArgs.numberToLookFor = true;
+    forFullBoolPrepArgs.goldArr = goldStandard;
+    forFullBoolPrepArgs.segmArr = algoOutput;
+
+    occupancyCalcData occData = getOccupancy<T>();
+     
+    ForBoolKernelArgs<T> fbArgs = executeHausdoff(forFullBoolPrepArgs, WIDTH, HEIGHT, DEPTH, occData, stream1, false);
+
+    size_t sizeMinMax = sizeof(unsigned int) * 20;
+    cudaMemcpy(minMaxesCPU, fbArgs.metaData.minMaxes, sizeMinMax, cudaMemcpyDeviceToHost);
+
+    int result = minMaxesCPU[13];
+
+    cudaFreeAsync(fbArgs.minMaxes, stream1);
+    free(minMaxesCPU);
+
+
+    cudaStreamDestroy(stream1);
+
+    return result;
+}
+
+
+int getHausdorffDistance_CUDA(at::Tensor goldStandard,
+    at::Tensor algoOutput
+    , int WIDTH, int HEIGHT, int DEPTH) {
+
+    int res = 0;
+
+    AT_DISPATCH_ALL_TYPESWithBool(goldStandard.type(), "getHausdorffDistance_CUDA", ([&] {
+        res= getHausdorffDistance_CUDA_Generic<scalar_t>(goldStandard, algoOutput, WIDTH, HEIGHT, DEPTH);
+
+        }));
+    return res;
+}

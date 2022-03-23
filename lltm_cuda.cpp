@@ -2,11 +2,17 @@
 
 #include <vector>
 
-// CUDA forward declarations
+// CUDA  declarations
 
 void lltm_cuda_forward(
     torch::Tensor input,
     torch::Tensor output, int xDim, int yDim, int zDim);
+
+int getHausdorffDistance_CUDA(
+    torch::Tensor goldStandard,
+    torch::Tensor algoOutput, const  int xDim, const int yDim, const int zDim);
+
+
 
 // C++ interface
 
@@ -28,7 +34,23 @@ void lltm_forward(
 
 }
 
+void getHausdorffDistance(
+    torch::Tensor input,
+    torch::Tensor output, const  int xDim, const int yDim, const int zDim) {
+
+    CHECK_INPUT(input);
+    CHECK_INPUT(output);
+
+
+    getHausdorffDistance_CUDA(input, output, xDim, yDim, zDim);
+
+
+}
+
+
+
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("forwardB", &lltm_forward, "LLTM forward (CUDA)");
+    m.def("getHausdorffDistance", &getHausdorffDistance, "Basic version of Hausdorff distance");
 }
