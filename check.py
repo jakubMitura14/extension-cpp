@@ -31,6 +31,7 @@ import tempfile
 import shutil
 import os
 import glob
+import gspread as gspread
 
 from monai.transforms import *
 
@@ -118,8 +119,13 @@ def benchmarkMitura():
 
                 #first entry result second entry time
                 olivieraTuple = lltm_cuda.benchmarkOlivieraCUDA(labelBoolTensorA, labelBoolTensorB,sizz[2], sizz[3],sizz[4])
+               
+                resultList = lltm_cuda.getHausdorffDistance_FullResList(labelBoolTensorA, labelBoolTensorB,sizz[2], sizz[3],sizz[4],1.0)
 
-                print("not robust %s robust %s oliviera %s " % (resNotRobust, resRobust ,olivieraTuple[0] ) )
+                print("not robust %s robust %s oliviera %s median of resultTensor %s max of resultTensor %s" % (resNotRobust, resRobust ,olivieraTuple[0], torch.median(resultList).item() ,torch.max(resultList).item()) )
+
+
+
 
 benchmarkMitura()
 

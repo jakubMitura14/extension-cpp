@@ -160,9 +160,9 @@ struct ForFullBoolPrepArgs {
     // will establish how many points we want to include in dilatation and how many we can ignore so typically set to 95% - so we will ignore only 5% most distant
     float robustnessPercent = 1.0;  // 0.95;
 
-    uint32_t* resultListPointerMeta;
-    uint32_t* resultListPointerLocalCPU;
-    uint32_t* resultListPointerIterNumb;
+    int32_t* resultListPointerMeta;
+    int32_t* resultListPointerLocalCPU;
+    int32_t* resultListPointerIterNumb;
 
 };
 
@@ -192,9 +192,14 @@ struct ForBoolKernelArgs {
     //cuda::annotated_ptr<int const, cuda::access_property::persisting> a_p{ a }, b_p{ b };
     //cuda::annotated_ptr<int, cuda::access_property::streaming> x_s{ x }, y_s{ y };
 
-    uint32_t* resultListPointerMeta;
-    uint32_t* resultListPointerLocal;
-    uint32_t* resultListPointerIterNumb;
+    int32_t* resultListPointerMeta;
+    int32_t* resultListPointerLocal;
+    int32_t* resultListPointerIterNumb;
+
+    torch::Tensor resultListPointerIterNumbTensor;
+
+
+
 
     uint32_t* origArrsPointer;
     uint32_t* mainArrAPointer;
@@ -1224,11 +1229,11 @@ becouse we need a lot of the additional memory spaces to minimize memory consump
 */
 #pragma once
 template <typename ZZR>
-inline int allocateMemoryAfterBoolKernel(ForBoolKernelArgs<ZZR>& gpuArgs, ForFullBoolPrepArgs<ZZR>& cpuArgs, cudaStream_t stream) {
+inline int allocateMemoryAfterBoolKernel(ForBoolKernelArgs<ZZR>& gpuArgs, ForFullBoolPrepArgs<ZZR>& cpuArgs, cudaStream_t stream, bool resIterNeeded) {
 
-    uint32_t* resultListPointerMeta;
-    uint32_t* resultListPointerLocal;
-    uint32_t* resultListPointerIterNumb;
+    int32_t* resultListPointerMeta;
+    int32_t* resultListPointerLocal;
+    int32_t* resultListPointerIterNumb;
     uint32_t* mainArrAPointer;
     uint32_t* mainArrBPointer;
     //free no longer needed arrays
@@ -1240,12 +1245,26 @@ inline int allocateMemoryAfterBoolKernel(ForBoolKernelArgs<ZZR>& gpuArgs, ForFul
     cudaMemcpyAsync(cpuArgs.metaData.minMaxes, gpuArgs.metaData.minMaxes, size, cudaMemcpyDeviceToHost, stream);
 
     unsigned int fpPlusFn = cpuArgs.metaData.minMaxes[7] + cpuArgs.metaData.minMaxes[8];
-    size = sizeof(uint32_t) * (fpPlusFn + 50);
+    size = sizeof(int32_t) * (fpPlusFn + 50);
 
 
     cudaMallocAsync(&resultListPointerLocal, size, stream);
     cudaMallocAsync(&resultListPointerIterNumb, size, stream);
     cudaMallocAsync(&resultListPointerMeta, size, stream);
+
+
+// we will allocate only if we need
+    if (resIterNeeded) {
+        auto options =
+            torch::TensorOptions()
+            .dtype(torch::kInt32)
+            .device(torch::kCUDA, 0)
+            .requires_grad(false);
+
+        auto resultListPointerIterNumbTensor = torch::empty((fpPlusFn + 50), options);
+        gpuArgs.resultListPointerIterNumbTensor = resultListPointerIterNumbTensor;
+    }
+
 
     auto xRange = gpuArgs.metaData.metaXLength;
     auto yRange = gpuArgs.metaData.MetaYLength;
@@ -1264,7 +1283,7 @@ inline int allocateMemoryAfterBoolKernel(ForBoolKernelArgs<ZZR>& gpuArgs, ForFul
     cudaMemcpyAsync(mainArrBPointer, gpuArgs.origArrsPointer, sizeB, cudaMemcpyDeviceToDevice, stream);
 
     //just in order set it to 0
-    uint32_t* resultListPointerMetaCPU = (uint32_t*)calloc(fpPlusFn + 50, sizeof(uint32_t));
+    int32_t* resultListPointerMetaCPU = (int32_t*)calloc(fpPlusFn + 50, sizeof(int32_t));
     cudaMemcpyAsync(resultListPointerMeta, resultListPointerMetaCPU, size, cudaMemcpyHostToDevice, stream);
     cudaMemcpyAsync(resultListPointerIterNumb, resultListPointerMetaCPU, size, cudaMemcpyHostToDevice, stream);
     free(resultListPointerMetaCPU);
@@ -2378,7 +2397,7 @@ https://codingbyexample.com/2020/09/25/cuda-graph-usage/
 #pragma once
 template <typename T>
 ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int WIDTH, const int HEIGHT, const int DEPTH, occupancyCalcData& occData,
-    cudaStream_t stream, bool resToSave = false, float robustnessPercent=1.0) {
+    cudaStream_t stream, bool resToSave, float robustnessPercent, bool resIterNeeded) {
     fFArgs.robustnessPercent = robustnessPercent;
     T* goldArrPointer = (T*)fFArgs.goldArr.data_ptr();
     T* segmArrPointer = (T*)fFArgs.segmArr.data_ptr();
@@ -2401,7 +2420,7 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
         , fbArgs.minMaxes);
 
 
-    int fpPlusFn = allocateMemoryAfterBoolKernel(fbArgs, fFArgs, stream);
+    int fpPlusFn = allocateMemoryAfterBoolKernel(fbArgs, fFArgs, stream, resIterNeeded);
 
 
 
@@ -2412,6 +2431,12 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
     void* kernel_args[] = { &fbArgs };
     cudaLaunchCooperativeKernel((void*)(mainPassKernel<int>), occData.blockForMainPass, dim3(32, occData.warpsNumbForMainPass), kernel_args);
 
+
+    //copy to the output tensor the rsult
+    if (resIterNeeded) {
+        auto size = sizeof(int32_t) * fbArgs.resultListPointerIterNumbTensor.sizes()[0];
+        cudaMemcpyAsync(fbArgs.resultListPointerIterNumbTensor.data_ptr(), fbArgs.resultListPointerIterNumb, size, cudaMemcpyDeviceToDevice, stream);
+    }
 
 
     cudaFreeAsync(fbArgs.resultListPointerMeta, stream);
@@ -2432,7 +2457,7 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
 
 #pragma once
 template <typename T>
-ForBoolKernelArgs<T> mainKernelsRun(ForFullBoolPrepArgs<T>& fFArgs, const int WIDTH, const int HEIGHT, const int DEPTH, cudaStream_t stream, bool resToSave = false
+ForBoolKernelArgs<T> mainKernelsRun(ForFullBoolPrepArgs<T>& fFArgs, const int WIDTH, const int HEIGHT, const int DEPTH, cudaStream_t stream, bool resToSave = false,bool  resIterNeeded=false
 ) {
 
     //cudaDeviceReset();
@@ -2442,7 +2467,7 @@ ForBoolKernelArgs<T> mainKernelsRun(ForFullBoolPrepArgs<T>& fFArgs, const int WI
     occupancyCalcData occData = getOccupancy<T>();
 
     //pointers ...
-    ForBoolKernelArgs<T> fbArgs = executeHausdoff(fFArgs, WIDTH, HEIGHT, DEPTH, occData, resToSave, stream);
+    ForBoolKernelArgs<T> fbArgs = executeHausdoff(fFArgs, WIDTH, HEIGHT, DEPTH, occData, resToSave, stream,1.0, resIterNeeded);
 
     checkCuda(cudaDeviceSynchronize(), "last ");
 
@@ -2510,7 +2535,7 @@ void benchmarkMitura(torch::Tensor goldStandard,
     auto begin = std::chrono::high_resolution_clock::now();
     cudaDeviceSynchronize();
 
-    ForBoolKernelArgs<bool> fbArgs = executeHausdoff(forFullBoolPrepArgs, WIDTH, HEIGHT, DEPTH, occData, stream1, resultToCopy);
+    ForBoolKernelArgs<bool> fbArgs = executeHausdoff(forFullBoolPrepArgs, WIDTH, HEIGHT, DEPTH, occData, stream1,1.0, resultToCopy,false);
 
     // ForBoolKernelArgs<bool> fbArgs = mainKernelsRun(forFullBoolPrepArgs, WIDTH, HEIGHT, DEPTH);
     cudaDeviceSynchronize();
@@ -2946,7 +2971,7 @@ void lltm_cuda_forward(
 template <typename T>
 int getHausdorffDistance_CUDA_Generic(at::Tensor goldStandard,
     at::Tensor algoOutput
-    , int WIDTH, int HEIGHT, int DEPTH, float robustnessPercent) {
+    , int WIDTH, int HEIGHT, int DEPTH, float robustnessPercent, bool resIterNeeded= false) {
     //TODO() use https ://pytorch.org/cppdocs/notes/tensor_cuda_stream.html
     cudaStream_t stream1;
     cudaStreamCreate(&stream1);
@@ -2964,7 +2989,7 @@ int getHausdorffDistance_CUDA_Generic(at::Tensor goldStandard,
 
     occupancyCalcData occData = getOccupancy<T>();
      
-    ForBoolKernelArgs<T> fbArgs = executeHausdoff(forFullBoolPrepArgs, WIDTH, HEIGHT, DEPTH, occData, stream1, false, robustnessPercent);
+    ForBoolKernelArgs<T> fbArgs = executeHausdoff(forFullBoolPrepArgs, WIDTH, HEIGHT, DEPTH, occData, stream1, false, robustnessPercent, resIterNeeded);
 
     size_t sizeMinMax = sizeof(unsigned int) * 20;
     //making sure we have all resultsto copy on cpu
@@ -2984,6 +3009,45 @@ int getHausdorffDistance_CUDA_Generic(at::Tensor goldStandard,
 }
 
 
+
+template <typename T>
+at::Tensor getHausdorffDistance_CUDA_FullResList_local(at::Tensor goldStandard,
+    at::Tensor algoOutput
+    , int WIDTH, int HEIGHT, int DEPTH, float robustnessPercent) {
+    //TODO() use https ://pytorch.org/cppdocs/notes/tensor_cuda_stream.html
+    cudaStream_t stream1;
+    cudaStreamCreate(&stream1);
+
+    MetaDataCPU metaData;
+    size_t size = sizeof(unsigned int) * 20;
+    unsigned int* minMaxesCPU = (unsigned int*)malloc(size);
+    metaData.minMaxes = minMaxesCPU;
+
+    ForFullBoolPrepArgs<T> forFullBoolPrepArgs;
+    forFullBoolPrepArgs.metaData = metaData;
+    forFullBoolPrepArgs.numberToLookFor = true;
+    forFullBoolPrepArgs.goldArr = goldStandard;
+    forFullBoolPrepArgs.segmArr = algoOutput;
+
+    occupancyCalcData occData = getOccupancy<T>();
+
+    ForBoolKernelArgs<T> fbArgs = executeHausdoff(forFullBoolPrepArgs, WIDTH, HEIGHT, DEPTH, occData, stream1, false, robustnessPercent, true);
+
+
+
+
+    cudaFreeAsync(fbArgs.minMaxes, stream1);
+    free(minMaxesCPU);
+
+
+
+    cudaStreamDestroy(stream1);
+
+    return fbArgs.resultListPointerIterNumbTensor;
+}
+
+
+
 int getHausdorffDistance_CUDA(at::Tensor goldStandard,
     at::Tensor algoOutput
     , const int WIDTH,const  int HEIGHT,const  int DEPTH
@@ -2995,5 +3059,22 @@ int getHausdorffDistance_CUDA(at::Tensor goldStandard,
         res= getHausdorffDistance_CUDA_Generic<scalar_t>(goldStandard, algoOutput, WIDTH, HEIGHT, DEPTH, robustnessPercent);
 
         }));
+    return res;
+}
+
+
+
+at::Tensor getHausdorffDistance_CUDA_FullResList(at::Tensor goldStandard,
+    at::Tensor algoOutput
+    , const int WIDTH, const  int HEIGHT, const  int DEPTH
+    , const float robustnessPercent) {
+
+    
+    at::Tensor res;
+    AT_DISPATCH_ALL_TYPESWithBool(goldStandard.type(), "getHausdorffDistance_CUDA", ([&] {
+        res= getHausdorffDistance_CUDA_FullResList_local<scalar_t>(goldStandard, algoOutput, WIDTH, HEIGHT, DEPTH, robustnessPercent);
+
+        }));
+
     return res;
 }
