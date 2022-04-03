@@ -75,8 +75,8 @@ from monai.metrics import SurfaceDistanceMetric
 from torch.utils import benchmark
 
 
-
-
+csvPath = "D:\\dataSets\\csvFromBenchmark\\csvRes.csv"
+data_dir = "D:\\dataSets\\CTORG\\"
 
 #robust monai calculation
 def hdToTestRobust(a, b,  WIDTH,  HEIGHT,  DEPTH):
@@ -204,7 +204,7 @@ def iterateOver(dat,df,noise,distortion ):
                             dfb=saveBenchToCSV(labelBoolTensorA,labelBoolTensorB,sizz,df,noise,distortion,0 )
                             if dfb.size> df.size:
                                 df=dfb
-                                df.to_csv("D:\\dataSets\\csvFromBenchmark\\csvRes.csv")
+                                df.to_csv(csvPath)
                         else:#now adding translations in z direction
                             pass
                             for translationNumb in range(1,30,5):
@@ -213,7 +213,7 @@ def iterateOver(dat,df,noise,distortion ):
                                 dfb=saveBenchToCSV(labelBoolTensorA,translated,sizz,df,noise,distortion,translationNumb )
                                 if dfb.size> df.size:
                                     df=dfb
-                                    df.to_csv("D:\\dataSets\\csvFromBenchmark\\csvRes.csv")
+                                    df.to_csv(csvPath)
         return df
 
 
@@ -255,7 +255,7 @@ def benchmarkMitura():
     ])
     
 
-    data_dir = "D:\\dataSets\\CTORG\\"
+
 
     train_images = sorted(
         glob.glob(os.path.join(data_dir, "volumes 0-49", "*.nii.gz")))
@@ -316,23 +316,3 @@ benchmarkMitura()
 
 
 
-
-#from torch.utils.cpp_extension import load
-#lltm_cuda = load(
-#    'lltm_cuda', ['lltm_cuda.cpp', 'lltm_cuda_kernel.cu'], verbose=True)
-#help(lltm_cuda)
-
-
-
-
-
-#kwargs = {'dtype': torch.float64,
-#          'device': device,
-#          'requires_grad': True}
-#X = torch.ones(5, dtype= torch.int32).to(device)
-#Y = torch.ones(5,dtype= torch.int32).to(device)
-#lltm_cuda.forwardB(X, Y)
-
-##check_forward(variables, True, True)
-
-#print("x = {}".format(Y.flatten()))
