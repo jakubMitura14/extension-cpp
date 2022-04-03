@@ -207,13 +207,13 @@ def iterateOver(dat,df,noise,distortion ):
                                 df.to_csv("D:\\dataSets\\csvFromBenchmark\\csvRes.csv")
                         else:#now adding translations in z direction
                             pass
-                            #for translationNumb in range(1,30,5):
-                            #    translated=torch.zeros_like(labelBoolTensorA)
-                            #    translated[:,:,:,:,translationNumb:sizz[4]]= labelBoolTensorA[:,:,:,:,0:(sizz[4]-translationNumb)]
-                            #    dfb=saveBenchToCSV(labelBoolTensorA,translated,sizz,df,noise,distortion,translationNumb )
-                            #    if dfb.size> df.size:
-                            #        df=dfb
-                            #        df.to_csv("D:\\dataSets\\csvFromBenchmark\\csvRes.csv")
+                            for translationNumb in range(1,30,5):
+                                translated=torch.zeros_like(labelBoolTensorA)
+                                translated[:,:,:,:,translationNumb:sizz[4]]= labelBoolTensorA[:,:,:,:,0:(sizz[4]-translationNumb)]
+                                dfb=saveBenchToCSV(labelBoolTensorA,translated,sizz,df,noise,distortion,translationNumb )
+                                if dfb.size> df.size:
+                                    df=dfb
+                                    df.to_csv("D:\\dataSets\\csvFromBenchmark\\csvRes.csv")
         return df
 
 
