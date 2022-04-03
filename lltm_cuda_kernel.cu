@@ -2622,7 +2622,7 @@ private:
     void print(cudaError_t error, char* msg);
 
 public:
-    int computeDistance(Volume* img1, Volume* img2);
+    int computeDistance(Volume* img1, Volume* img2, bool* d_img1, bool* d_img2);
 
 };
 
@@ -2755,7 +2755,7 @@ __global__ void dilate(const bool* IMG1, const bool* IMG2, const bool* img1Read,
 }
 
 #pragma once
-int HausdorffDistance::computeDistance(Volume* img1, Volume* img2) {
+int HausdorffDistance::computeDistance(Volume* img1, Volume* img2, bool* d_img1, bool* d_img2) {
 
     const int height = (*img1).getHeight(), width = (*img1).getWidth(), depth = (*img1).getDepth();
 
@@ -2775,14 +2775,7 @@ int HausdorffDistance::computeDistance(Volume* img1, Volume* img2) {
 
 
     //allocating the input images on the GPU
-    bool* d_img1, * d_img2;
-    cudaMalloc(&d_img1, size);
-    cudaMalloc(&d_img2, size);
 
-
-    //copying the data to the allocated memory on the GPU
-    cudaMemcpyAsync(d_img1, (*img1).getVolume(), size, cudaMemcpyHostToDevice);
-    cudaMemcpyAsync(d_img2, (*img2).getVolume(), size, cudaMemcpyHostToDevice);
 
 
     //allocating the images that will be the processing ones
@@ -2892,6 +2885,17 @@ std::tuple<int, double> benchmarkOlivieraCUDA(torch::Tensor goldStandardA,
         }
     }
 
+    size_t size = WIDTH * HEIGHT * DEPTH * sizeof(bool);
+
+
+    bool* d_img1, * d_img2;
+    cudaMalloc(&d_img1, size);
+    cudaMalloc(&d_img2, size);
+
+
+    //copying the data to the allocated memory on the GPU
+    cudaMemcpyAsync(d_img1, (img1).getVolume(), size, cudaMemcpyHostToDevice);
+    cudaMemcpyAsync(d_img2, (img2).getVolume(), size, cudaMemcpyHostToDevice);
 
 
     auto begin = std::chrono::high_resolution_clock::now();
@@ -2899,7 +2903,7 @@ std::tuple<int, double> benchmarkOlivieraCUDA(torch::Tensor goldStandardA,
 
     cudaDeviceSynchronize();
 
-    int dist = (*hd).computeDistance(&img1, &img2);
+    int dist = (*hd).computeDistance(&img1, &img2, d_img1, d_img2);
     cudaDeviceSynchronize();
 
 
