@@ -102,15 +102,15 @@ def avSurfDistToTest(a, b,  WIDTH,  HEIGHT,  DEPTH):
 
 #my robust  version
 def myRobustHd(a, b,  WIDTH,  HEIGHT,  DEPTH):
-    return lltm_cuda.getHausdorffDistance(a, b,  WIDTH,  HEIGHT,  DEPTH,0.90)
+    return lltm_cuda.getHausdorffDistance(a, b,  WIDTH,  HEIGHT,  DEPTH,0.90, torch.ones(1, dtype =bool) )
 
 #my not robust  version
 def myHd(a, b,  WIDTH,  HEIGHT,  DEPTH):
-    return lltm_cuda.getHausdorffDistance(a, b,  WIDTH,  HEIGHT,  DEPTH,1.0)
+    return lltm_cuda.getHausdorffDistance(a, b,  WIDTH,  HEIGHT,  DEPTH,1.0, torch.ones(1, dtype =bool) )
 
 # median version
 def mymedianHd(a, b,  WIDTH,  HEIGHT,  DEPTH):
-    return torch.mean(lltm_cuda.getHausdorffDistance_FullResList(a, b,  WIDTH,  HEIGHT,  DEPTH,1.0).type(torch.FloatTensor)  ).item()
+    return torch.mean(lltm_cuda.getHausdorffDistance_FullResList(a, b,  WIDTH,  HEIGHT,  DEPTH,1.0, torch.ones(1, dtype =bool) ).type(torch.FloatTensor)  ).item()
 
 
 
@@ -207,13 +207,13 @@ def iterateOver(dat,df,noise,distortion ):
                                 df.to_csv(csvPath)
                         else:#now adding translations in z direction
                             pass
-                            for translationNumb in range(1,30,5):
-                                translated=torch.zeros_like(labelBoolTensorA)
-                                translated[:,:,:,:,translationNumb:sizz[4]]= labelBoolTensorA[:,:,:,:,0:(sizz[4]-translationNumb)]
-                                dfb=saveBenchToCSV(labelBoolTensorA,translated,sizz,df,noise,distortion,translationNumb )
-                                if dfb.size> df.size:
-                                    df=dfb
-                                    df.to_csv(csvPath)
+                            #for translationNumb in range(1,30,5):
+                            #    translated=torch.zeros_like(labelBoolTensorA)
+                            #    translated[:,:,:,:,translationNumb:sizz[4]]= labelBoolTensorA[:,:,:,:,0:(sizz[4]-translationNumb)]
+                            #    dfb=saveBenchToCSV(labelBoolTensorA,translated,sizz,df,noise,distortion,translationNumb )
+                            #    if dfb.size> df.size:
+                            #        df=dfb
+                            #        df.to_csv(csvPath)
         return df
 
 
@@ -283,10 +283,12 @@ def benchmarkMitura():
                                   ,'mymedianHdTime','olivieraTime','hdToTestRobustValue','hdToTestValue '
                                   ,'myRobustHdValue','myHdValue','mymeanHdValue','olivieraValue'
                                   ,'avSurfDistToTestValue','WIDTH', 'HEIGHT', 'DEPTH'])
-
-    for dat in check_loader:
-        df=iterateOver(dat,df,0,0)
-    
+    try:
+        for dat in check_loader:
+            df=iterateOver(dat,df,0,0)
+    except:
+        print("An exception occurred")   
+        
     try:
         for dat in check_loaderWithDistortions: 
             df=iterateOver(dat,df,0,1)
@@ -297,16 +299,12 @@ def benchmarkMitura():
             df=iterateOver(dat,df,1,0) 
     except:
         print("An exception occurred")
-    try:
-        for dat in check_loader:
-            df=iterateOver(dat,df,0,0)
-    except:
-        print("An exception occurred")                 
+              
 
 
 benchmarkMitura()
 
-
+#TODO additional benchmarks against pymia, scipy - https://docs.scipy.org/doc/scipy/search.html?q=hausdorff; py - hausdorff - https://github.com/mavillan/py-hausdorff; itk - https://discourse.itk.org/t/computing-95-hausdorff-distance/3832/7
 
 
 

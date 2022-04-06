@@ -3,22 +3,16 @@
 #include <vector>
 
 // CUDA  declarations
-
-void lltm_cuda_forward(
-    torch::Tensor input,
-    torch::Tensor output, int xDim, int yDim, int zDim);
-
 int getHausdorffDistance_CUDA(
     torch::Tensor goldStandard,
     torch::Tensor algoOutput
     , const  int xDim, const int yDim
-    , const int zDim,const float robustnessPercent);
-
+    , const int zDim,const float robustnessPercent
+    , at::Tensor numberToLookFor);
 
 at::Tensor getHausdorffDistance_CUDA_FullResList(at::Tensor goldStandard,
     at::Tensor algoOutput
-    , int WIDTH, int HEIGHT, int DEPTH, float robustnessPercent);
-
+    , int WIDTH, int HEIGHT, int DEPTH, float robustnessPercent, at::Tensor numberToLookFor);
 
 
 std::tuple<int, double>  benchmarkOlivieraCUDA(
@@ -34,36 +28,21 @@ std::tuple<int, double>  benchmarkOlivieraCUDA(
 #define CHECK_CONTIGUOUS(x) AT_ASSERTM(x.is_contiguous(), #x " must be contiguous")
 #define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
 
-void lltm_forward(
-    torch::Tensor input,
-    torch::Tensor output
-    , const int xDim, const int yDim, const int zDim) {
-
-    CHECK_INPUT(input);
-    CHECK_INPUT(output);
-
-
-    lltm_cuda_forward(input, output, xDim, yDim, zDim);
-
-
-}
-
 int getHausdorffDistance(
     torch::Tensor goldStandard,
     torch::Tensor algoOutput
     , const  int xDim, const int yDim, const int zDim
-    , const float robustnessPercent=1.0
-) {
+    , const float robustnessPercent
+    , at::Tensor numberToLookFor) {
 
     CHECK_INPUT(goldStandard);
     CHECK_INPUT(algoOutput);
 
 
-   return  getHausdorffDistance_CUDA(goldStandard, algoOutput, xDim, yDim, zDim, robustnessPercent);
+   return  getHausdorffDistance_CUDA(goldStandard, algoOutput, xDim, yDim, zDim, robustnessPercent, numberToLookFor);
 
 
 }
-
 
 
 
@@ -71,14 +50,14 @@ at::Tensor getHausdorffDistance_FullResList(
     torch::Tensor goldStandard,
     torch::Tensor algoOutput
     , const  int xDim, const int yDim, const int zDim
-    , const float robustnessPercent = 1.0
-) {
+    , const float robustnessPercent 
+    , at::Tensor numberToLookFor) {
 
     CHECK_INPUT(goldStandard);
     CHECK_INPUT(algoOutput);
 
 
-    return  getHausdorffDistance_CUDA_FullResList(goldStandard, algoOutput, xDim, yDim, zDim, robustnessPercent);
+    return  getHausdorffDistance_CUDA_FullResList(goldStandard, algoOutput, xDim, yDim, zDim, robustnessPercent, numberToLookFor);
 
 
 }
@@ -96,9 +75,9 @@ std::tuple<int, double>  benchmarkOlivieraCUDAOnlyBool(
 
 }
 
-
+//Binding functions with template parameters
+//https://github.com/pybind/pybind11/pull/3665/files
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("forwardB", &lltm_forward, "LLTM forward (CUDA)");
     m.def("getHausdorffDistance", &getHausdorffDistance, "Basic version of Hausdorff distance");
     m.def("benchmarkOlivieraCUDA", &benchmarkOlivieraCUDA, "Algorithm by Oliviera - just for comparison sake - accept only boolean arrays  ");
     m.def("getHausdorffDistance_FullResList", &getHausdorffDistance_FullResList, " return additionally full result list indicating in which dilatation iterations results were recorded ");
