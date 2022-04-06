@@ -398,8 +398,8 @@ inline __device__ uint32_t isBitAt(const uint32_t& numb, const int pos) {
 /***************************************
  * MinMaxes kernel
  * ********************************/
-
  /*
+
  iteration over metadata - becouse metadata may be small and to maximize occupancy we use linear index and then clalculate xMeta,ymeta,zMeta from this linear index ...
  */
 #pragma once
@@ -534,6 +534,10 @@ __global__ void getMinMaxes(ForBoolKernelArgs<TYO> fbArgs
     };
 }
 
+
+/***************************************
+ * boolPrepareKernel
+ * ********************************/
 
 
 /*
@@ -754,6 +758,11 @@ __global__ void boolPrepareKernel(ForBoolKernelArgs<TYO> fbArgs
 
 
 
+
+/***************************************
+ * firstMetaPrepareKernel
+ * ********************************/
+
 /*
 we add here to appropriate queue data  about metadata of blocks of intrest
 minMaxesPos- marks in minmaxes the postion of global offset counter -12) global FP offset 13) global FnOffset
@@ -829,10 +838,6 @@ __global__ void firstMetaPrepareKernel(ForBoolKernelArgs<PYO> fbArgs
     //main metadata iteration
     for (uint32_t linIdexMeta = blockIdx.x * blockDim.x + threadIdx.x; linIdexMeta < metaData.totalMetaLength; linIdexMeta += blockDim.x * gridDim.x) {
 
-        // if ((threadIdx.x == 0) && (threadIdx.y == 0)) {
-           //  printf("in first meta pass linIdexMeta %d blockIdx.x %d blockDim.x %d metaData.totalMetaLength %d threadIdx.x %d \n  ", linIdexMeta, blockIdx.x, blockDim.x, metaData.totalMetaLength, threadIdx.x );
-         //}
-
          //goldpass
         addToQueue(linIdexMeta, 0
             , fpFnLocCounter, localWorkQueue, localOffsetQueue, localWorkQueueCounter
@@ -845,18 +850,12 @@ __global__ void firstMetaPrepareKernel(ForBoolKernelArgs<PYO> fbArgs
             , metaDataArr, metaData, minMaxes, workQueue);
 
 
-
-        /*       addToQueue(fbArgs, old, count, tensorslice, xMeta, yMeta, zMeta, fbArgs.metaData.fpOffset, fbArgs.metaData.fpCount, 0, fbArgs.metaData.isActiveSegm, fpFnLocCounter, localWorkAndOffsetQueue, localWorkQueueCounter);
-               addToQueue(fbArgs, old, count, tensorslice, xMeta, yMeta, zMeta, fbArgs.metaData.fnOffset, fbArgs.metaData.fnCount, 1, fbArgs.metaData.isActiveGold, fpFnLocCounter, localWorkAndOffsetQueue, localWorkQueueCounter);*/
     }
     __syncthreads();
     if ((threadIdx.x == 0)) {
         globalOffsetForBlock[0] = atomicAdd(&(minMaxes[12]), (fpFnLocCounter[0]));
 
-        /* if (fpFnLocCounter[0]>0) {
-             printf("\n in meta first pass global offset %d  locCounter %d \n  ", globalOffsetForBlock[0], fpFnLocCounter[0]);
-         }*/
-    };
+       };
     if ((threadIdx.x == 1)) {
         if (localWorkQueueCounter[0] > 0) {
             globalWorkQueueCounter[0] = atomicAdd(&(minMaxes[9]), (localWorkQueueCounter[0]));
@@ -864,40 +863,20 @@ __global__ void firstMetaPrepareKernel(ForBoolKernelArgs<PYO> fbArgs
     }
     __syncthreads();
 
-    //exporting to global work queue
-    //cooperative_groups::memcpy_async(cta, (&workQueue[globalWorkQueueCounter[0]]), (localWorkQueue), (sizeof(uint32_t) * localWorkQueueCounter[0]));
-
 
     //setting offsets
     for (uint32_t i = threadIdx.x; i < localWorkQueueCounter[0]; i += blockDim.x) {
         workQueue[globalWorkQueueCounter[0] + i] = localWorkQueue[i];
 
-        /*        printf("FFIrst meta pass lin meta to Work Q %d is gold %d to spot %d  \n "
-            , localWorkQueue[i] - isGoldOffset*(localWorkQueue[i] >= isGoldOffset)
-                , (localWorkQueue[i] >= isGoldOffset), globalWorkQueueCounter[0] + i);*/
-
                 //FP pass
         if (localWorkQueue[i] >= isGoldOffset) {
             metaDataArr[(localWorkQueue[i] - isGoldOffset) * metaData.metaDataSectionLength + 5] = localOffsetQueue[i] + globalOffsetForBlock[0];
-            //printf("fp offset lin meta %d total offset  %d  global part %d local part %d \n "
-            //    , localWorkQueue[i] - isGoldOffset
-            //    , localOffsetQueue[i] + globalOffsetForBlock[0]
-            //, globalOffsetForBlock[0]
-            //, localOffsetQueue[i]);
-
         }
         //FN pass
         else {
             metaDataArr[(localWorkQueue[i]) * metaData.metaDataSectionLength + 6] = localOffsetQueue[i] + globalOffsetForBlock[0];
-            //printf("fn offset lin meta %d total offset  %d  global part %d local part %d \n "
-            //    , localWorkQueue[i]
-            //    , localOffsetQueue[i] + globalOffsetForBlock[0]
-            //    , globalOffsetForBlock[0]
-            //    , localOffsetQueue[i]);
 
         };
-
-        //__syncthreads();
 
 
     }
@@ -907,6 +886,11 @@ __global__ void firstMetaPrepareKernel(ForBoolKernelArgs<PYO> fbArgs
 };
 
 
+
+
+/***************************************
+ * memoery allocations
+ * ********************************/
 
 
 /*
@@ -960,11 +944,6 @@ inline ForBoolKernelArgs<TCC> getArgsForKernel(ForFullBoolPrepArgs<TCC>& mainFun
 
     return res;
 }
-
-
-
-
-
 
 
 #pragma once
@@ -1101,10 +1080,9 @@ inline int allocateMemoryAfterBoolKernel(ForBoolKernelArgs<ZZR>& gpuArgs, ForFul
 
 
 
-
-/*
-
-*/
+/***************************************
+ * main kernel
+ * ********************************/
 template <typename TKKI>
 inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
