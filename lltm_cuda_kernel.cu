@@ -73,7 +73,7 @@ extern "C" struct MetaDataCPU {
     //7)global FP count; 8)global FN count  9) workQueueCounter 10)resultFP globalCounter 11) resultFn globalCounter
      //12) global FPandFn offset 13)globalIterationNumb
     //array3dWithDimsCPU<unsigned int> minMaxes;
-    unsigned int* minMaxes;
+    unsigned int minMaxes[20];
     uint32_t* resultList;
 
 };
@@ -889,7 +889,7 @@ __global__ void firstMetaPrepareKernel(ForBoolKernelArgs<PYO> fbArgs
 
 
 /***************************************
- * memoery allocations
+ * memory allocations
  * ********************************/
 
 
@@ -1235,11 +1235,7 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
 
             /////////////////////////****************************************************************************************************************
-            /////////////////////////****************************************************************************************************************
-            /////////////////////////****************************************************************************************************************
-            /////////////////////////****************************************************************************************************************
-            /////////////////////////****************************************************************************************************************
-            /// dilataions
+              /// dilataions
 
     //initial cleaning  and initializations include loading min maxes
             if (threadIdx.x == 7 && threadIdx.y == 0 && !isPaddingPass) {
@@ -1654,7 +1650,7 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                         if (localBlockMetaData[(i & 1) * 20 + ((1 - isGoldForLocQueue[i]) + 1)] //fp for gold and fn count for not gold
                             > localBlockMetaData[(i & 1) * 20 + ((1 - isGoldForLocQueue[i]) + 3)]) {// so count is bigger than counter so we should validate
                                         // now we look through bits and when some is set we call it a result
-#pragma unroll
+                            #pragma unroll
                             for (uint8_t bitPos = 0; bitPos < 32; bitPos++) {
                                 //if any bit here is set it means it should be added to result list
                                 if (isBitAt(mainShmem[begResShmem + threadIdx.x + threadIdx.y * 32], bitPos)
@@ -1679,7 +1675,7 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                                     //we add one gere jjust to distinguish it from empty result
                                     fbArgs.resultListPointerMeta[mainShmem[begSecRegShmem + threadIdx.x + threadIdx.y * 32]] = uint32_t(mainShmem[startOfLocalWorkQ + i] + (isGoldOffset * isGoldForLocQueue[i]) + 1);
                                     fbArgs.resultListPointerLocal[mainShmem[begSecRegShmem + threadIdx.x + threadIdx.y * 32]] = uint32_t((fbArgs.dbYLength * 32 * bitPos) + (threadIdx.y * 32) + (threadIdx.x));
-                                    fbArgs.resultListPointerIterNumb[mainShmem[begSecRegShmem + threadIdx.x + threadIdx.y * 32]] = uint32_t(iterationNumb[0]);
+                                    fbArgs.resultListPointerIterNumb[mainShmem[begSecRegShmem + threadIdx.x + threadIdx.y * 32]] = uint32_t(iterationNumb[0]+1);
 
 
 
@@ -1796,19 +1792,8 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
             grid.sync();
             /////////////////////////****************************************************************************************************************
-/////////////////////////****************************************************************************************************************
-/////////////////////////****************************************************************************************************************
-/////////////////////////****************************************************************************************************************
-/////////////////////////****************************************************************************************************************
-/// metadata pass
 
-
-
-
-
-
-
-
+            /// metadata pass
 
 
             // preparation loads
@@ -1971,7 +1956,7 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
     //setting global iteration number to local one
     if (blockIdx.x == 0) {
         if (threadIdx.x == 2 && threadIdx.y == 0) {
-            fbArgs.metaData.minMaxes[13] = iterationNumb[0];
+            fbArgs.metaData.minMaxes[13] = (iterationNumb[0]+1);
         }
     }
 }
@@ -1979,8 +1964,9 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
 
 
-
-
+/***************************************
+ * putting all kernels and memory allocations together
+ * ********************************/
 
 
 /*
@@ -2029,10 +2015,6 @@ inline occupancyCalcData getOccupancy() {
     res.warpsNumbForMainPass = blockSize / 32;
     res.blockForMainPass = minGridSize;
 
-    // res.blockForMainPass = 1;
-     //res.blockForMainPass = 136;
-     //res.warpsNumbForMainPass = 8;
-
     //printf("warpsNumbForMainPass %d blockForMainPass %d  ", res.warpsNumbForMainPass, res.blockForMainPass);
     return res;
 }
@@ -2054,7 +2036,7 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
 
     ForBoolKernelArgs<T> fbArgs = getArgsForKernel<T>(fFArgs, occData.warpsNumbForMainPass, occData.blockForMainPass, WIDTH, HEIGHT, DEPTH, stream);
 
-    getMinMaxes << <occData.blockSizeForMinMax, dim3(32, occData.warpsNumbForMinMax) >> > (fbArgs, fbArgs.minMaxes
+    getMinMaxes << <occData.blockSizeForMinMax, dim3(32, occData.warpsNumbForMinMax), 0,stream >> > (fbArgs, fbArgs.minMaxes
         , goldArrPointer
         , segmArrPointer
         , fbArgs.metaData);
@@ -2063,7 +2045,7 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
 
     fbArgs.metaData = allocateMemoryAfterMinMaxesKernel(fbArgs, fFArgs, stream);
     fbArgs.robustnessPercent = robustnessPercent;
-    boolPrepareKernel << <occData.blockSizeFoboolPrepareKernel, dim3(32, occData.warpsNumbForboolPrepareKernel) >> > (
+    boolPrepareKernel << <occData.blockSizeFoboolPrepareKernel, dim3(32, occData.warpsNumbForboolPrepareKernel),0, stream >> > (
         fbArgs, fbArgs.metaData, fbArgs.origArrsPointer, fbArgs.metaDataArrPointer
         , goldArrPointer
         , segmArrPointer
@@ -2074,12 +2056,12 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
 
 
 
-    firstMetaPrepareKernel << <occData.blockForFirstMetaPass, occData.theadsForFirstMetaPass >> > (fbArgs, fbArgs.metaData, fbArgs.minMaxes, fbArgs.workQueuePointer, fbArgs.origArrsPointer, fbArgs.metaDataArrPointer);
+    firstMetaPrepareKernel << <occData.blockForFirstMetaPass, occData.theadsForFirstMetaPass, 0,stream >> > (fbArgs, fbArgs.metaData, fbArgs.minMaxes, fbArgs.workQueuePointer, fbArgs.origArrsPointer, fbArgs.metaDataArrPointer);
 
 
 
     void* kernel_args[] = { &fbArgs };
-    cudaLaunchCooperativeKernel((void*)(mainPassKernel<int>), occData.blockForMainPass, dim3(32, occData.warpsNumbForMainPass), kernel_args);
+    cudaLaunchCooperativeKernel((void*)(mainPassKernel<int>), occData.blockForMainPass, dim3(32, occData.warpsNumbForMainPass), kernel_args, 0,stream);
 
 
     //copy to the output tensor the rsult
@@ -2139,9 +2121,9 @@ int getHausdorffDistance_CUDA_Generic(at::Tensor goldStandard,
     cudaStreamCreate(&stream1);
 
     MetaDataCPU metaData;
-    size_t size = sizeof(unsigned int) * 20;
-    unsigned int* minMaxesCPU = (unsigned int*)malloc(size);
-    metaData.minMaxes = minMaxesCPU;
+    //size_t size = sizeof(unsigned int) * 20;
+    //unsigned int* minMaxesCPU = (unsigned int*)malloc(size);
+    //metaData.minMaxes = minMaxesCPU;
 
     ForFullBoolPrepArgs<T> forFullBoolPrepArgs;
     forFullBoolPrepArgs.metaData = metaData;
@@ -2156,12 +2138,12 @@ int getHausdorffDistance_CUDA_Generic(at::Tensor goldStandard,
     size_t sizeMinMax = sizeof(unsigned int) * 20;
     //making sure we have all resultsto copy on cpu
     cudaDeviceSynchronize();
-    cudaMemcpy(minMaxesCPU, fbArgs.metaData.minMaxes, sizeMinMax, cudaMemcpyDeviceToHost);
+    cudaMemcpy(metaData.minMaxes, fbArgs.metaData.minMaxes, sizeMinMax, cudaMemcpyDeviceToHost);
 
-    int result = minMaxesCPU[13];
+    int result = metaData.minMaxes[13];
 
     cudaFreeAsync(fbArgs.minMaxes, stream1);
-    free(minMaxesCPU);
+    //free(minMaxesCPU);
 
 
     cudaStreamDestroy(stream1);
@@ -2180,9 +2162,9 @@ at::Tensor getHausdorffDistance_CUDA_FullResList_local(at::Tensor goldStandard,
     cudaStreamCreate(&stream1);
 
     MetaDataCPU metaData;
-    size_t size = sizeof(unsigned int) * 20;
-    unsigned int* minMaxesCPU = (unsigned int*)malloc(size);
-    metaData.minMaxes = minMaxesCPU;
+    //size_t size = sizeof(unsigned int) * 20;
+    //unsigned int* minMaxesCPU = (unsigned int*)malloc(size);
+    //metaData.minMaxes = minMaxesCPU;
 
     ForFullBoolPrepArgs<T> forFullBoolPrepArgs;
     forFullBoolPrepArgs.metaData = metaData;
@@ -2198,7 +2180,7 @@ at::Tensor getHausdorffDistance_CUDA_FullResList_local(at::Tensor goldStandard,
 
 
     cudaFreeAsync(fbArgs.minMaxes, stream1);
-    free(minMaxesCPU);
+    //free(metaData.minMaxesCPU);
 
 
 
@@ -2207,7 +2189,9 @@ at::Tensor getHausdorffDistance_CUDA_FullResList_local(at::Tensor goldStandard,
     return fbArgs.resultListPointerIterNumbTensor;
 }
 
-
+/*
+Functions for pybind
+*/
 int getHausdorffDistance_CUDA(at::Tensor goldStandard,
     at::Tensor algoOutput
     , const int WIDTH, const  int HEIGHT, const  int DEPTH
@@ -2239,6 +2223,39 @@ at::Tensor getHausdorffDistance_CUDA_FullResList(at::Tensor goldStandard,
 }
 
 
+
+
+/***************************************
+ *enable getting localizations of the voxels that contributed to HD
+ * ********************************/
+
+
+ //	for (int i = 0; i < 5;i++) {
+ //		if (resultListPointerLocalCPU[i]>0 || resultListPointerMetaCPU[i]>0) {
+ //			uint32_t linIdexMeta = resultListPointerMetaCPU[i] - (isGoldOffset * (resultListPointerMetaCPU[i] >= isGoldOffset))-1;
+ //			uint32_t xMeta = linIdexMeta % fbArgs.metaData.metaXLength;
+ //			uint32_t zMeta = uint32_t(floor((float)(linIdexMeta / (fbArgs.metaData.metaXLength * fbArgs.metaData.MetaYLength))));
+ //			uint32_t yMeta = uint32_t(floor((float)((linIdexMeta - ((zMeta * fbArgs.metaData.metaXLength * fbArgs.metaData.MetaYLength) + xMeta)) / fbArgs.metaData.metaXLength)));
+ //			
+ //			uint32_t linLocal = resultListPointerLocalCPU[i];
+ //			uint32_t xLoc = linLocal % fbArgs.dbXLength;
+ //			uint32_t zLoc = uint32_t(floor((float)(linLocal / (32 * fbArgs.dbYLength))));
+ //			uint32_t yLoc = uint32_t(floor((float)((linLocal - ((zLoc * 32 * fbArgs.dbYLength) + xLoc)) / 32)));
+ //
+ //
+ //			uint32_t x = xMeta * 32 + xLoc;
+ //			uint32_t y= yMeta * fbArgs.dbYLength + yLoc;
+ //			uint32_t z = zMeta * 32 + zLoc;
+ //			uint32_t iterNumb  = resultListPointerIterNumbCPU[i];
+ //
+ //			printf("resullt linIdexMeta %d x %d y %d z %d  xMeta %d yMeta %d zMeta %d xLoc %d yLoc %d zLoc %d linLocal %d  iterNumb %d \n"
+ //				,linIdexMeta
+ //				,x,y,z
+ //				,xMeta,yMeta, zMeta
+ //				,xLoc,yLoc,zLoc
+ //				, linLocal
+ //				, iterNumb
+ //
 
 
 
@@ -2597,3 +2614,7 @@ std::tuple<int, double> benchmarkOlivieraCUDA(torch::Tensor goldStandardA,
     //HD : 234
     return { dist, time };
 }
+
+
+
+
