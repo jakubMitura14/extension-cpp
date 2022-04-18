@@ -304,105 +304,177 @@ def benchmarkMitura():
 
 #benchmarkMitura()
 
+
+
+
+from typing import Any, Optional
+
+import torch
+
+from monai._extensions.loader import load_module
+from monai.metrics.utils import do_metric_reduction
+from monai.metrics import CumulativeIterationMetric
+
+
+__all__ = ["MorphologicalHausdorffDistanceMetric"]
+
+
+class MorphologicalHausdorffDistanceMetric(CumulativeIterationMetric):
+
+    def aggregate(self):
+        """
+        Execute reduction logic for the output of `compute_hausdorff_distance`.
+
+        """
+        data = self.get_buffer()
+        if not isinstance(data, torch.Tensor):
+            raise ValueError("the data to aggregate must be PyTorch Tensor.")
+
+        # do metric reduction
+        f, not_nans = do_metric_reduction(data, self.reduction)
+        return (f, not_nans) if self.get_not_nans else f
+
+    def __init__(self, compare_values: torch.Tensor, percent: float = 1.0, to_invert_dims=False) -> None:
+        super().__init__()
+        self.percent = percent
+        self.to_invert_dims = to_invert_dims
+        self.compare_values = compare_values
+        self.compiled_extension = load_module("hausdorff")
+
+    def _compute_tensor(self, y_pred: torch.Tensor, y: Optional[torch.Tensor] = None):
+        """
+        Compute the Hausdorff distance.
+        Important!!
+        Size of y and y_pred
+
+        Args:
+            y_pred: input data to compute, It must be 3 dimensional
+            y: ground truth to compute mean the distance. It must be 3 dimensional,
+            Dimensionality needs to be identical as in y_pred
+
+        """
+
+        if y.shape != y_pred.shape:
+            raise ValueError(f"y_pred and y should have same shapes, got {y_pred.shape} and {y.shape}.")
+        sizz = y.shape
+        if self.to_invert_dims:
+            return self.compiled_extension.getHausdorffDistance(
+                y_pred, y, sizz[2], sizz[1], sizz[0], self.percent, self.compare_values
+            )
+        else:
+            return self.compiled_extension.getHausdorffDistance(
+                y_pred, y, sizz[0], sizz[1], sizz[2], self.percent, self.compare_values
+            )
+
+
               
-### testing single points diffrent dims
-#dim1
-compare_values = torch.ones(1).to(device)
-a = torch.zeros(100, 100, 100).to(device)
-b = torch.zeros(100, 100, 100).to(device)
+dimA = 11
+
+dimAA = 150
+dimBB = 160
+dimCC = 170
+
+# testing single points diffrent dims
+# dim1
+compare_values = torch.ones(1)
+a = torch.zeros(dimA, dimA, dimA)
+b = torch.zeros(dimA, dimA, dimA)
 a[0, 0, 0] = 1
 b[10, 0, 0] = 1
 
-#dim2
-a1 = torch.zeros(200, 200, 200).to(device)
-b1 = torch.zeros(200, 200, 200).to(device)
+# dim2
+a1 = torch.zeros(dimAA, dimBB, dimCC)
+b1 = torch.zeros(dimAA, dimBB, dimCC)
 a1[0, 0, 0] = 1
 b1[0, 15, 0] = 1
 
-#dim3
-a2 = torch.zeros(400, 200, 300).to(device)
-b2 = torch.zeros(400, 200, 300).to(device)
+# dim3
+a2 = torch.zeros(dimAA, dimBB, dimCC)
+b2 = torch.zeros(dimAA, dimBB, dimCC)
 a2[0, 0, 10] = 1
 b2[0, 0, 150] = 1
 
-### testing whole llines and compare_values set to 2
-compare_valuesB = torch.ones(1).to(device)
-compare_valuesB[0]=2
-a3 = torch.zeros(400, 200, 300).to(device)
-b3 = torch.zeros(400, 200, 300).to(device)
+# testing whole llines and compare_values set to 2
+compare_values_b = torch.ones(1)
+compare_values_b[0] = 2
+a3 = torch.zeros(dimAA, dimBB, dimCC)
+b3 = torch.zeros(dimAA, dimBB, dimCC)
 a3[:, 0, 10] = 2
 b3[:, 0, 150] = 2
 
-a4 = torch.zeros(400, 200, 300).to(device)
-b4 = torch.zeros(400, 200, 300).to(device)
+a4 = torch.zeros(dimAA, dimBB, dimCC)
+b4 = torch.zeros(dimAA, dimBB, dimCC)
 a4[10, 0, :] = 2
 b4[120, 0, :] = 2
 
 
-a5 = torch.zeros(400, 200, 300).to(device)
-b5 = torch.zeros(400, 200, 300).to(device)
+a5 = torch.zeros(dimAA, dimBB, dimCC)
+b5 = torch.zeros(dimAA, dimBB, dimCC)
 a5[10, :, 0] = 2
 b5[120, :, 0] = 2
 
 
-## testing whole planes
-a6 = torch.zeros(400, 200, 300).to(device)
-b6 = torch.zeros(400, 200, 300).to(device)
+# testing whole planes
+a6 = torch.zeros(dimAA, dimBB, dimCC)
+b6 = torch.zeros(dimAA, dimBB, dimCC)
 a6[10, :, :] = 2
 b6[120, :, :] = 2
 
 
-a7 = torch.zeros(400, 400, 400).to(device)
-b7 = torch.zeros(400, 400, 400).to(device)
+a7 = torch.zeros(dimAA, dimBB, dimCC)
+b7 = torch.zeros(dimAA, dimBB, dimCC)
 a7[:, 0, :] = 2
-b7[:,110, :] = 2
+b7[:, 110, :] = 2
 
-a8 = torch.zeros(400, 200, 300).to(device)
-b8 = torch.zeros(400, 200, 300).to(device)
-#a8[:, :, 20] = 2
-#b8[:,:, 130] = 2
-
-
-a8[1, 1, 20]= 2
-b8[1,1, 130]= 2
-#a8[2, 2, 20]= 2
-#b8[2,2, 130]= 2
+a8 = torch.zeros(dimAA, dimBB, dimCC)
+b8 = torch.zeros(dimAA, dimBB, dimCC)
+# a8[:, :, 20] = 2
+# b8[:,:, 130] = 2
 
 
-#testing robust
+a8[1, 1, 20] = 2
+b8[1, 1, 130] = 2
+a8[2, 2, 20] = 2
+b8[2, 2, 130] = 2
 
+# multi points
+a9 = torch.zeros(dimAA, dimBB, dimCC)
+b9 = torch.zeros(dimAA, dimBB, dimCC)
+
+a9[0, 20, 0] = 2
+a9[0, 0, 30] = 2
+a9[40, 0, 0] = 2
+b9[0, 0, 0] = 2
 
 TEST_CASES = [
-    [[a, b, 1.0, compare_values], 10]
-    ,[[a1, b1, 1.0, compare_values], 15]
-    ,[[a2, b2, 1.0, compare_values], 140]
-    ,[[a3, b3, 1.0, compare_valuesB], 140]
-    ,[[a4, b4, 1.0, compare_valuesB], 110]
-    ,[[a5, b5, 1.0, compare_valuesB], 110]
-    ,[[a6, b6, 1.0, compare_valuesB], 110]
-    ,[[a7, b7, 1.0, compare_valuesB], 110]
-    ,[[a8, b8, 1.0, compare_valuesB], 110]
-    
-    ]
+    [[a, b, 1.0, compare_values], 10],
+    # [[a1, b1, 1.0, compare_values], 15],
+    # [[a2, b2, 1.0, compare_values], 140],
+    # [[a3, b3, 1.0, compare_values_b], 140],
+    # [[a4, b4, 1.0, compare_values_b], 110],
+    # [[a5, b5, 1.0, compare_values_b], 110],
+    # [[a6, b6, 1.0, compare_values_b], 110],
+    # [[a7, b7, 1.0, compare_values_b], 110],
+    # [[a8, b8, 1.0, compare_values_b], 110],  # testing robust
+    # [[a6, b6, 0.9, compare_values_b], 110],
+    # [[a7, b7, 0.85, compare_values_b], 110],
+    # [[a8, b8, 0.8, compare_values_b], 110],  # multi points
+    # [[a9, b9, 1.0, compare_values_b], 40]
+]
+
 
 
 class TestHausdorffDistanceMorphological(unittest.TestCase):
     @parameterized.expand(TEST_CASES)
     def test_value(self, input_data, expected_value):
-        [y_pred, y, percentt, compare_values] = input_data
-        #hd_metric = MorphologicalHausdorffDistanceMetric(percent=percentt)
-        #result = hd_metric.compute_hausdorff_distance(y_pred, y, numberToLookFor)
+        if(not version_leq(f"{torch.version.cuda}", "10.100") and not version_leq(f"{torch.version.cuda}", "10.200")):
+            [y_pred, y, percentt, compare_values] = input_data
+            hd_metric = MorphologicalHausdorffDistanceMetric(
+                compare_values.to(device), percentt, True
+            )  # True only for tests
+            result = hd_metric._compute_tensor(y_pred.to(device), y.to(device))
+            np.testing.assert_allclose(expected_value, result, rtol=1e-7)
 
-        
-        #y_pred = torch.zeros(35, 35, 35).to(device)
-        #y = torch.zeros(35, 35, 35).to(device)
-        sizz = y.shape  
-        print(sizz)
-        #y_pred[0, 0, 0] = True
-        #y[0, 0, 4] = True
-        result = lltm_cuda.getHausdorffDistance(y_pred, y, sizz[2], sizz[1] , sizz[0] ,1.0, compare_values )
-        print(result)
-        np.testing.assert_allclose(expected_value, result, rtol=1e-7)
 
 
 unittest.main()
