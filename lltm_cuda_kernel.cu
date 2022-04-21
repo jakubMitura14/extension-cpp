@@ -12,12 +12,14 @@
 #include <torch/extension.h>
 //#include <ATen/ATen.h>
 #include <torch/torch.h>
+
 #include <cuda.h>
 #include <cuda_runtime.h>
 
 #include <cstdint>
 #include <cooperative_groups.h>
 //#include <cooperative_groups/reduce.h>
+#include <cuda/pipeline>
 #include <vector>
 //#include <cuda/annotated_ptr>
 #include <cooperative_groups/reduce.h>
@@ -1108,6 +1110,16 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
     constexpr size_t stages_count = 2; // Pipeline stages number
 
+    // Allocate shared storage for a two-stage cuda::pipeline:
+    __shared__ cuda::pipeline_shared_state<
+        cuda::thread_scope::thread_scope_block,
+        stages_count
+    > shared_state;
+
+    //cuda::pipeline<cuda::thread_scope_thread>  pipeline = cuda::make_pipeline(cta, &shared_state);
+    cuda::pipeline<cuda::thread_scope_block>  pipeline = cuda::make_pipeline(cta, &shared_state);
+
+
 
     //usefull for iterating through local work queue
     __shared__ bool isGoldForLocQueue[localWorkQueLength];
@@ -1266,7 +1278,7 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
             };
 
             if (threadIdx.y == 1) {
-                cooperative_groups::memcpy_async(cta, (&localMinMaxes[0]), (&fbArgs.minMaxes[7]), (sizeof(unsigned int) * 5));
+                cooperative_groups::memcpy_async(cta, (&localMinMaxes[0]), (&fbArgs.minMaxes[7]), cuda::aligned_size_t<4>(sizeof(unsigned int) * 5));
             }
 
             __syncthreads();
@@ -1297,13 +1309,15 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
 
                 //loading metadata
+                pipeline.producer_acquire();
                 if (((bigloop) < localTotalLenthOfWorkQueue[0]) && ((bigloop) < ((blockIdx.x + 1) * globalWorkQueueOffset[0]))) {
 
-                    memcpy_async(cta, (&localBlockMetaData[0]),
+                    cuda::memcpy_async(cta, (&localBlockMetaData[0]),
                         (&fbArgs.metaDataArrPointer[mainShmem[startOfLocalWorkQ] * fbArgs.metaData.metaDataSectionLength])
-                        , (sizeof(uint32_t) * 20));
+                        , cuda::aligned_size_t<4>(sizeof(uint32_t) * 20), pipeline);
 
                 }
+                pipeline.producer_commit();
 
 
                 __syncthreads();
@@ -1317,40 +1331,53 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
 
 
-                        memcpy_async(cta, &mainShmem[begSourceShmem], &getSourceReduced(fbArgs, iterationNumb)[
+                        pipeline.producer_acquire();
+                        cuda::memcpy_async(cta, &mainShmem[begSourceShmem], &getSourceReduced(fbArgs, iterationNumb)[
                             mainShmem[startOfLocalWorkQ + i] * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])],
-                            (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength));
+                            cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength), pipeline);
+                        pipeline.producer_commit();
 
+                        //just so pipeline will work well
+                        pipeline.consumer_wait();
+
+
+
+                        pipeline.consumer_release();
                         __syncthreads();
 
                         ///////// step 1 load top and process main data
                                         //load top
+                        pipeline.producer_acquire();
                         if (localBlockMetaData[(i & 1) * 20 + 13] < isGoldOffset) {
-                            memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
+                            cuda::memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
                                 &getSourceReduced(fbArgs, iterationNumb)[localBlockMetaData[(i & 1) * 20 + 13]
                                 * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])],
-                                (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
-                                );
+                                cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                                , pipeline);
                         }
+                        pipeline.producer_commit();
                         //process main
+                        pipeline.consumer_wait();
                         //marking weather block is already full and no more dilatations are possible
                         if (__popc(mainShmem[begSourceShmem + threadIdx.x + threadIdx.y * 32]) < 32) {
                             isBlockFull[i & 1] = false;
                         }
                         mainShmem[begResShmem + threadIdx.x + threadIdx.y * 32] = bitDilatate(mainShmem[begSourceShmem + threadIdx.x + threadIdx.y * 32]);
-                        __syncthreads();
+                        pipeline.consumer_release();
 
                         ///////// step 2 load bottom and process top
                                         //load bottom
+                        pipeline.producer_acquire();
                         if (localBlockMetaData[(i & 1) * 20 + 14] < isGoldOffset) {
-                            memcpy_async(cta, (&mainShmem[begSecRegShmem]),
+                            cuda::memcpy_async(cta, (&mainShmem[begSecRegShmem]),
                                 &getSourceReduced(fbArgs, iterationNumb)[localBlockMetaData[(i & 1) * 20 + 14]
                                 * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])],
-                                 (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
-                                );
+                                cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                                , pipeline);
                         }
+                        pipeline.producer_commit();
                         //process top
-                        __syncthreads();
+                        pipeline.consumer_wait();
 
 
                         if (localBlockMetaData[(i & 1) * 20 + 13] < isGoldOffset) {
@@ -1362,17 +1389,20 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                             mainShmem[begResShmem + threadIdx.x + threadIdx.y * 32] |= ((mainShmem[begfirstRegShmem + threadIdx.x + threadIdx.y * 32] >> 31) & 1) << 0;
                         }
 
+                        pipeline.consumer_release();
                         __syncthreads();
 
                         /////////// step 3 load right  process bottom
+                        pipeline.producer_acquire();
                         if (localBlockMetaData[(i & 1) * 20 + 16] < isGoldOffset) {
-                            memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
+                            cuda::memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
                                 &getSourceReduced(fbArgs, iterationNumb)[localBlockMetaData[(i & 1) * 20 + 16] * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])],
-                                 (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
-                                );
+                                cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                                , pipeline);
                         }
+                        pipeline.producer_commit();
                         //process bototm
-                        __syncthreads();
+                        pipeline.consumer_wait();
 
 
                         if (localBlockMetaData[(i & 1) * 20 + 14] < isGoldOffset) {
@@ -1389,19 +1419,19 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                               , 0, 31
                               , begSecRegShmem, i);*/
 
-                        __syncthreads();
-
-
+                        pipeline.consumer_release();
                         /////////// step 4 load left process right
                                         //load left
+                        pipeline.producer_acquire();
                         if (mainShmem[startOfLocalWorkQ + i] > 0) {
-                            memcpy_async(cta, (&mainShmem[begSecRegShmem]),
+                            cuda::memcpy_async(cta, (&mainShmem[begSecRegShmem]),
                                 &getSourceReduced(fbArgs, iterationNumb)[(mainShmem[startOfLocalWorkQ + i] - 1) * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])],
-                                 (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
-                                );
+                                cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                                , pipeline);
                         }
+                        pipeline.producer_commit();
                         //process right
-                        __syncthreads();
+                        pipeline.consumer_wait();
 
                         if (threadIdx.x == (fbArgs.dbXLength - 1)) {
                             // now we need to load the data from the neigbouring blocks
@@ -1425,18 +1455,21 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
                         }
 
+                        pipeline.consumer_release();
                         __syncthreads();
                         /////// step 5 load anterior process left
                                         //load anterior
+                        pipeline.producer_acquire();
                         if (localBlockMetaData[(i & 1) * 20 + 17] < isGoldOffset) {
 
-                            memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
+                            cuda::memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
                                 &getSourceReduced(fbArgs, iterationNumb)[localBlockMetaData[(i & 1) * 20 + 17] * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])],
-                                 (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
-                                );
+                                cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                                , pipeline);
                         }
+                        pipeline.producer_commit();
                         //process left
-                        __syncthreads();
+                        pipeline.consumer_wait();
 
                         // so we first check for corner cases
                         if (threadIdx.x == 0) {
@@ -1462,21 +1495,24 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                         }
 
 
+                        pipeline.consumer_release();
                         __syncthreads();
 
                         /////// step 6 load posterior process anterior
                                         //load posterior
+                        pipeline.producer_acquire();
                         if (localBlockMetaData[(i & 1) * 20 + 18] < isGoldOffset) {
 
 
-                            memcpy_async(cta, (&mainShmem[begSecRegShmem]),
+                            cuda::memcpy_async(cta, (&mainShmem[begSecRegShmem]),
                                 &getSourceReduced(fbArgs, iterationNumb)[localBlockMetaData[(i & 1) * 20 + 18] * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])],
-                                 (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
-                                );
+                                cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                                , pipeline);
                         }
-                        __syncthreads();
+                        pipeline.producer_commit();
 
                         //process anterior
+                        pipeline.consumer_wait();
 
                         // so we first check for corner cases
                         if (threadIdx.y == (fbArgs.dbYLength - 1)) {
@@ -1502,37 +1538,40 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                         }
 
 
+                        pipeline.consumer_release();
                         __syncthreads();
 
                         /////// step 7
                                        //load reference if needed or data for next iteration if there is such
                                         //process posterior, save data from res shmem to global memory also we mark weather block is full
+                        pipeline.producer_acquire();
 
                         //if block should be validated we load data for validation
                         if (localBlockMetaData[(i & 1) * 20 + ((1 - isGoldForLocQueue[i]) + 1)] //fp for gold and fn count for not gold
                         > localBlockMetaData[(i & 1) * 20 + ((1 - isGoldForLocQueue[i]) + 3)]) {// so count is bigger than counter so we should validate
-                            memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
+                            cuda::memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
                                 &fbArgs.origArrsPointer[mainShmem[startOfLocalWorkQ + i] * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (isGoldForLocQueue[i])], //we look for
-                                 (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
-                                );
+                                cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                                , pipeline);
 
                         }
                         else {//if we are not validating we immidiately start loading data for next loop
                             if (i + 1 < worQueueStep[0]) {
-                                memcpy_async(cta, (&localBlockMetaData[((i + 1) & 1) * 20]),
+                                cuda::memcpy_async(cta, (&localBlockMetaData[((i + 1) & 1) * 20]),
                                     (&fbArgs.metaDataArrPointer[(mainShmem[startOfLocalWorkQ + 1 + i])
                                         * fbArgs.metaData.metaDataSectionLength])
-                                    ,  (sizeof(uint32_t) * 20));
+                                    , cuda::aligned_size_t<4>(sizeof(uint32_t) * 20), pipeline);
 
 
                             }
                         }
 
-                        __syncthreads();
 
+                        pipeline.producer_commit();
 
                         //processPosteriorAndSaveResShmem
 
+                        pipeline.consumer_wait();
                         //dilatate posterior
 
 
@@ -1558,16 +1597,15 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                                 | mainShmem[begResShmem + threadIdx.x + threadIdx.y * 32];
 
                         }
-                        __syncthreads();
 
                         //now all data should be properly dilatated we save it to global memory
                         //try save target reduced via mempcy async ...
 
 
-                        //memcpy_async(cta,
+                        //cuda::memcpy_async(cta,
                         //    &getTargetReduced(fbArgs, iterationNumb)[mainShmem[startOfLocalWorkQ + i] * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])]
                         //    , (&mainShmem[begResShmem]),
-                        //     (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                        //    cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
                         //    , pipeline);
 
 
@@ -1580,23 +1618,26 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
 
 
+                        pipeline.consumer_release();
 
                         __syncthreads();
 
                         //////// step 8 basically in order to complete here anyting the count need to be bigger than counter
                                                       // loading for next block if block is not to be validated it was already done earlier
+                        pipeline.producer_acquire();
                         if (localBlockMetaData[(i & 1) * 20 + ((1 - isGoldForLocQueue[i]) + 1)] //fp for gold and fn count for not gold
                             > localBlockMetaData[(i & 1) * 20 + ((1 - isGoldForLocQueue[i]) + 3)]) {// so count is bigger than counter so we should validate
                             if (i + 1 < worQueueStep[0]) {
 
 
-                                memcpy_async(cta, (&localBlockMetaData[((i + 1) & 1) * 20]),
+                                cuda::memcpy_async(cta, (&localBlockMetaData[((i + 1) & 1) * 20]),
                                     (&fbArgs.metaDataArrPointer[(mainShmem[startOfLocalWorkQ + 1 + i])
                                         * fbArgs.metaData.metaDataSectionLength])
-                                    ,  (sizeof(uint32_t) * 20));
+                                    , cuda::aligned_size_t<4>(sizeof(uint32_t) * 20), pipeline);
 
                             }
                         }
+                        pipeline.producer_commit();
 
 
 
@@ -1604,6 +1645,7 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                         __syncthreads();
 
                         //validation - so looking for newly covered voxel for opposite array so new fps or new fns
+                        pipeline.consumer_wait();
 
                         if (localBlockMetaData[(i & 1) * 20 + ((1 - isGoldForLocQueue[i]) + 1)] //fp for gold and fn count for not gold
                             > localBlockMetaData[(i & 1) * 20 + ((1 - isGoldForLocQueue[i]) + 3)]) {// so count is bigger than counter so we should validate
@@ -1644,6 +1686,7 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
                         }
                         /////////
+                        pipeline.consumer_release();
 
                         /// /// cleaning
 
@@ -1713,7 +1756,12 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
                 //here we are after all of the blocks planned to be processed by this block are
 
+                // just for pipeline to work
+                pipeline.consumer_wait();
 
+
+
+                pipeline.consumer_release();
 
             }
 

@@ -339,7 +339,7 @@ class MorphologicalHausdorffDistanceMetric(CumulativeIterationMetric):
         self.percent = percent
         self.to_invert_dims = to_invert_dims
         self.compare_values = compare_values
-        self.compiled_extension = load_module("hausdorff")
+        self.compiled_extension = lltm_cuda
 
     def _compute_tensor(self, y_pred: torch.Tensor, y: Optional[torch.Tensor] = None):
         """
@@ -351,7 +351,6 @@ class MorphologicalHausdorffDistanceMetric(CumulativeIterationMetric):
             y_pred: input data to compute, It must be 3 dimensional
             y: ground truth to compute mean the distance. It must be 3 dimensional,
             Dimensionality needs to be identical as in y_pred
-
         """
 
         if y.shape != y_pred.shape:
@@ -368,11 +367,11 @@ class MorphologicalHausdorffDistanceMetric(CumulativeIterationMetric):
 
 
               
-dimA = 11
+dimA = 50
 
-dimAA = 150
-dimBB = 160
-dimCC = 170
+dimAA = 170
+dimBB = 190
+dimCC = 200
 
 # testing single points diffrent dims
 # dim1
@@ -448,18 +447,18 @@ b9[0, 0, 0] = 2
 
 TEST_CASES = [
     [[a, b, 1.0, compare_values], 10],
-    # [[a1, b1, 1.0, compare_values], 15],
-    # [[a2, b2, 1.0, compare_values], 140],
-    # [[a3, b3, 1.0, compare_values_b], 140],
-    # [[a4, b4, 1.0, compare_values_b], 110],
-    # [[a5, b5, 1.0, compare_values_b], 110],
-    # [[a6, b6, 1.0, compare_values_b], 110],
-    # [[a7, b7, 1.0, compare_values_b], 110],
-    # [[a8, b8, 1.0, compare_values_b], 110],  # testing robust
-    # [[a6, b6, 0.9, compare_values_b], 110],
-    # [[a7, b7, 0.85, compare_values_b], 110],
-    # [[a8, b8, 0.8, compare_values_b], 110],  # multi points
-    # [[a9, b9, 1.0, compare_values_b], 40]
+    [[a1, b1, 1.0, compare_values], 15],
+    [[a2, b2, 1.0, compare_values], 140],
+    [[a3, b3, 1.0, compare_values_b], 140],
+    [[a4, b4, 1.0, compare_values_b], 110],
+    [[a5, b5, 1.0, compare_values_b], 110],
+    [[a6, b6, 1.0, compare_values_b], 110],
+    [[a7, b7, 1.0, compare_values_b], 110],
+    [[a8, b8, 1.0, compare_values_b], 110],  # testing robust
+    [[a6, b6, 0.9, compare_values_b], 110],
+    [[a7, b7, 0.85, compare_values_b], 110],
+    [[a8, b8, 0.8, compare_values_b], 110],  # multi points
+    [[a9, b9, 1.0, compare_values_b], 40]
 ]
 
 
@@ -467,31 +466,28 @@ TEST_CASES = [
 class TestHausdorffDistanceMorphological(unittest.TestCase):
     @parameterized.expand(TEST_CASES)
     def test_value(self, input_data, expected_value):
-        if(not version_leq(f"{torch.version.cuda}", "10.100") and not version_leq(f"{torch.version.cuda}", "10.200")):
+    #    if(not version_leq(f"{torch.version.cuda}", "10.100") and not version_leq(f"{torch.version.cuda}", "10.200")):
             [y_pred, y, percentt, compare_values] = input_data
             hd_metric = MorphologicalHausdorffDistanceMetric(
                 compare_values.to(device), percentt, True
             )  # True only for tests
             result = hd_metric._compute_tensor(y_pred.to(device), y.to(device))
+            print(result)
             np.testing.assert_allclose(expected_value, result, rtol=1e-7)
 
 
 
 unittest.main()
 
-
-
-
-
+#res3DNeeded
+#    torch::Tensor resultListPointerLocalTensor;
+#    torch::Tensor resultListPointerMetaTensor;
+#    fbArgs.resultListPointerIterNumbTensor
+#        int32_t* resultListPointerMeta;
+#    int32_t* resultListPointerLocal;
+#    int32_t* resultListPointerIterNumb;
 
 
 #TODO additional benchmarks against pymia, scipy - https://docs.scipy.org/doc/scipy/search.html?q=hausdorff; py - hausdorff - https://github.com/mavillan/py-hausdorff; itk - https://discourse.itk.org/t/computing-95-hausdorff-distance/3832/7
-
-
-
-
-
-
-
 
 
