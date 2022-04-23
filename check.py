@@ -491,3 +491,8 @@ unittest.main()
 #TODO additional benchmarks against pymia, scipy - https://docs.scipy.org/doc/scipy/search.html?q=hausdorff; py - hausdorff - https://github.com/mavillan/py-hausdorff; itk - https://discourse.itk.org/t/computing-95-hausdorff-distance/3832/7
 
 
+
+
+    #int32_t* resultListPointerMeta;
+    #int32_t* resultListPointerLocal;
+    #int32_t* resultListPointerIterNumb;

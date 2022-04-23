@@ -12,14 +12,12 @@
 #include <torch/extension.h>
 //#include <ATen/ATen.h>
 #include <torch/torch.h>
-
 #include <cuda.h>
 #include <cuda_runtime.h>
 
 #include <cstdint>
 #include <cooperative_groups.h>
 //#include <cooperative_groups/reduce.h>
-#include <cuda/pipeline>
 #include <vector>
 //#include <cuda/annotated_ptr>
 #include <cooperative_groups/reduce.h>
@@ -188,6 +186,8 @@ struct ForBoolKernelArgs {
     int32_t* resultListPointerIterNumb;
 
     torch::Tensor resultListPointerIterNumbTensor;
+    torch::Tensor resultListPointerLocalTensor;
+    torch::Tensor resultListPointerMetaTensor;
 
     uint32_t* origArrsPointer;
     uint32_t* mainArrAPointer;
@@ -1009,7 +1009,7 @@ becouse we need a lot of the additional memory spaces to minimize memory consump
 */
 #pragma once
 template <typename ZZR>
-inline int allocateMemoryAfterBoolKernel(ForBoolKernelArgs<ZZR>& gpuArgs, ForFullBoolPrepArgs<ZZR>& cpuArgs, cudaStream_t stream, bool resIterNeeded) {
+inline int allocateMemoryAfterBoolKernel(ForBoolKernelArgs<ZZR>& gpuArgs, ForFullBoolPrepArgs<ZZR>& cpuArgs, cudaStream_t stream, bool resIterNeeded, bool res3DNeeded) {
 
     int32_t* resultListPointerMeta;
     int32_t* resultListPointerLocal;
@@ -1039,6 +1039,18 @@ inline int allocateMemoryAfterBoolKernel(ForBoolKernelArgs<ZZR>& gpuArgs, ForFul
 
         auto resultListPointerIterNumbTensor = torch::empty((fpPlusFn + 50), options);
         gpuArgs.resultListPointerIterNumbTensor = resultListPointerIterNumbTensor;
+    }
+    if (res3DNeeded) {
+        auto options =
+            torch::TensorOptions()
+            .dtype(torch::kInt32)
+            .device(torch::kCUDA, 0)
+            .requires_grad(false);
+
+        auto resultListPointerLocalTensor = torch::empty((fpPlusFn + 50), options);
+        auto resultListPointerMetaTensor = torch::empty((fpPlusFn + 50), options);
+        gpuArgs.resultListPointerLocalTensor = resultListPointerLocalTensor;
+        gpuArgs.resultListPointerMetaTensor = resultListPointerMetaTensor;
     }
 
 
@@ -1109,16 +1121,6 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
 
     constexpr size_t stages_count = 2; // Pipeline stages number
-
-    // Allocate shared storage for a two-stage cuda::pipeline:
-    __shared__ cuda::pipeline_shared_state<
-        cuda::thread_scope::thread_scope_block,
-        stages_count
-    > shared_state;
-
-    //cuda::pipeline<cuda::thread_scope_thread>  pipeline = cuda::make_pipeline(cta, &shared_state);
-    cuda::pipeline<cuda::thread_scope_block>  pipeline = cuda::make_pipeline(cta, &shared_state);
-
 
 
     //usefull for iterating through local work queue
@@ -1278,7 +1280,7 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
             };
 
             if (threadIdx.y == 1) {
-                cooperative_groups::memcpy_async(cta, (&localMinMaxes[0]), (&fbArgs.minMaxes[7]), cuda::aligned_size_t<4>(sizeof(unsigned int) * 5));
+                cooperative_groups::memcpy_async(cta, (&localMinMaxes[0]), (&fbArgs.minMaxes[7]), (sizeof(unsigned int) * 5));
             }
 
             __syncthreads();
@@ -1309,15 +1311,13 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
 
                 //loading metadata
-                pipeline.producer_acquire();
                 if (((bigloop) < localTotalLenthOfWorkQueue[0]) && ((bigloop) < ((blockIdx.x + 1) * globalWorkQueueOffset[0]))) {
 
-                    cuda::memcpy_async(cta, (&localBlockMetaData[0]),
+                    memcpy_async(cta, (&localBlockMetaData[0]),
                         (&fbArgs.metaDataArrPointer[mainShmem[startOfLocalWorkQ] * fbArgs.metaData.metaDataSectionLength])
-                        , cuda::aligned_size_t<4>(sizeof(uint32_t) * 20), pipeline);
+                        , (sizeof(uint32_t) * 20));
 
                 }
-                pipeline.producer_commit();
 
 
                 __syncthreads();
@@ -1331,53 +1331,40 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
 
 
-                        pipeline.producer_acquire();
-                        cuda::memcpy_async(cta, &mainShmem[begSourceShmem], &getSourceReduced(fbArgs, iterationNumb)[
+                        memcpy_async(cta, &mainShmem[begSourceShmem], &getSourceReduced(fbArgs, iterationNumb)[
                             mainShmem[startOfLocalWorkQ + i] * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])],
-                            cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength), pipeline);
-                        pipeline.producer_commit();
+                            (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength));
 
-                        //just so pipeline will work well
-                        pipeline.consumer_wait();
-
-
-
-                        pipeline.consumer_release();
                         __syncthreads();
 
                         ///////// step 1 load top and process main data
                                         //load top
-                        pipeline.producer_acquire();
                         if (localBlockMetaData[(i & 1) * 20 + 13] < isGoldOffset) {
-                            cuda::memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
+                            memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
                                 &getSourceReduced(fbArgs, iterationNumb)[localBlockMetaData[(i & 1) * 20 + 13]
                                 * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])],
-                                cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
-                                , pipeline);
+                                (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                                );
                         }
-                        pipeline.producer_commit();
                         //process main
-                        pipeline.consumer_wait();
                         //marking weather block is already full and no more dilatations are possible
                         if (__popc(mainShmem[begSourceShmem + threadIdx.x + threadIdx.y * 32]) < 32) {
                             isBlockFull[i & 1] = false;
                         }
                         mainShmem[begResShmem + threadIdx.x + threadIdx.y * 32] = bitDilatate(mainShmem[begSourceShmem + threadIdx.x + threadIdx.y * 32]);
-                        pipeline.consumer_release();
+                        __syncthreads();
 
                         ///////// step 2 load bottom and process top
                                         //load bottom
-                        pipeline.producer_acquire();
                         if (localBlockMetaData[(i & 1) * 20 + 14] < isGoldOffset) {
-                            cuda::memcpy_async(cta, (&mainShmem[begSecRegShmem]),
+                            memcpy_async(cta, (&mainShmem[begSecRegShmem]),
                                 &getSourceReduced(fbArgs, iterationNumb)[localBlockMetaData[(i & 1) * 20 + 14]
                                 * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])],
-                                cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
-                                , pipeline);
+                                 (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                                );
                         }
-                        pipeline.producer_commit();
                         //process top
-                        pipeline.consumer_wait();
+                        __syncthreads();
 
 
                         if (localBlockMetaData[(i & 1) * 20 + 13] < isGoldOffset) {
@@ -1389,20 +1376,17 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                             mainShmem[begResShmem + threadIdx.x + threadIdx.y * 32] |= ((mainShmem[begfirstRegShmem + threadIdx.x + threadIdx.y * 32] >> 31) & 1) << 0;
                         }
 
-                        pipeline.consumer_release();
                         __syncthreads();
 
                         /////////// step 3 load right  process bottom
-                        pipeline.producer_acquire();
                         if (localBlockMetaData[(i & 1) * 20 + 16] < isGoldOffset) {
-                            cuda::memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
+                            memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
                                 &getSourceReduced(fbArgs, iterationNumb)[localBlockMetaData[(i & 1) * 20 + 16] * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])],
-                                cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
-                                , pipeline);
+                                 (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                                );
                         }
-                        pipeline.producer_commit();
                         //process bototm
-                        pipeline.consumer_wait();
+                        __syncthreads();
 
 
                         if (localBlockMetaData[(i & 1) * 20 + 14] < isGoldOffset) {
@@ -1419,19 +1403,19 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                               , 0, 31
                               , begSecRegShmem, i);*/
 
-                        pipeline.consumer_release();
+                        __syncthreads();
+
+
                         /////////// step 4 load left process right
                                         //load left
-                        pipeline.producer_acquire();
                         if (mainShmem[startOfLocalWorkQ + i] > 0) {
-                            cuda::memcpy_async(cta, (&mainShmem[begSecRegShmem]),
+                            memcpy_async(cta, (&mainShmem[begSecRegShmem]),
                                 &getSourceReduced(fbArgs, iterationNumb)[(mainShmem[startOfLocalWorkQ + i] - 1) * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])],
-                                cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
-                                , pipeline);
+                                 (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                                );
                         }
-                        pipeline.producer_commit();
                         //process right
-                        pipeline.consumer_wait();
+                        __syncthreads();
 
                         if (threadIdx.x == (fbArgs.dbXLength - 1)) {
                             // now we need to load the data from the neigbouring blocks
@@ -1455,21 +1439,18 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
                         }
 
-                        pipeline.consumer_release();
                         __syncthreads();
                         /////// step 5 load anterior process left
                                         //load anterior
-                        pipeline.producer_acquire();
                         if (localBlockMetaData[(i & 1) * 20 + 17] < isGoldOffset) {
 
-                            cuda::memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
+                            memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
                                 &getSourceReduced(fbArgs, iterationNumb)[localBlockMetaData[(i & 1) * 20 + 17] * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])],
-                                cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
-                                , pipeline);
+                                 (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                                );
                         }
-                        pipeline.producer_commit();
                         //process left
-                        pipeline.consumer_wait();
+                        __syncthreads();
 
                         // so we first check for corner cases
                         if (threadIdx.x == 0) {
@@ -1495,24 +1476,21 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                         }
 
 
-                        pipeline.consumer_release();
                         __syncthreads();
 
                         /////// step 6 load posterior process anterior
                                         //load posterior
-                        pipeline.producer_acquire();
                         if (localBlockMetaData[(i & 1) * 20 + 18] < isGoldOffset) {
 
 
-                            cuda::memcpy_async(cta, (&mainShmem[begSecRegShmem]),
+                            memcpy_async(cta, (&mainShmem[begSecRegShmem]),
                                 &getSourceReduced(fbArgs, iterationNumb)[localBlockMetaData[(i & 1) * 20 + 18] * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])],
-                                cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
-                                , pipeline);
+                                 (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                                );
                         }
-                        pipeline.producer_commit();
+                        __syncthreads();
 
                         //process anterior
-                        pipeline.consumer_wait();
 
                         // so we first check for corner cases
                         if (threadIdx.y == (fbArgs.dbYLength - 1)) {
@@ -1538,40 +1516,37 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                         }
 
 
-                        pipeline.consumer_release();
                         __syncthreads();
 
                         /////// step 7
                                        //load reference if needed or data for next iteration if there is such
                                         //process posterior, save data from res shmem to global memory also we mark weather block is full
-                        pipeline.producer_acquire();
 
                         //if block should be validated we load data for validation
                         if (localBlockMetaData[(i & 1) * 20 + ((1 - isGoldForLocQueue[i]) + 1)] //fp for gold and fn count for not gold
                         > localBlockMetaData[(i & 1) * 20 + ((1 - isGoldForLocQueue[i]) + 3)]) {// so count is bigger than counter so we should validate
-                            cuda::memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
+                            memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
                                 &fbArgs.origArrsPointer[mainShmem[startOfLocalWorkQ + i] * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (isGoldForLocQueue[i])], //we look for
-                                cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
-                                , pipeline);
+                                 (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                                );
 
                         }
                         else {//if we are not validating we immidiately start loading data for next loop
                             if (i + 1 < worQueueStep[0]) {
-                                cuda::memcpy_async(cta, (&localBlockMetaData[((i + 1) & 1) * 20]),
+                                memcpy_async(cta, (&localBlockMetaData[((i + 1) & 1) * 20]),
                                     (&fbArgs.metaDataArrPointer[(mainShmem[startOfLocalWorkQ + 1 + i])
                                         * fbArgs.metaData.metaDataSectionLength])
-                                    , cuda::aligned_size_t<4>(sizeof(uint32_t) * 20), pipeline);
+                                    ,  (sizeof(uint32_t) * 20));
 
 
                             }
                         }
 
+                        __syncthreads();
 
-                        pipeline.producer_commit();
 
                         //processPosteriorAndSaveResShmem
 
-                        pipeline.consumer_wait();
                         //dilatate posterior
 
 
@@ -1597,15 +1572,16 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                                 | mainShmem[begResShmem + threadIdx.x + threadIdx.y * 32];
 
                         }
+                        __syncthreads();
 
                         //now all data should be properly dilatated we save it to global memory
                         //try save target reduced via mempcy async ...
 
 
-                        //cuda::memcpy_async(cta,
+                        //memcpy_async(cta,
                         //    &getTargetReduced(fbArgs, iterationNumb)[mainShmem[startOfLocalWorkQ + i] * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])]
                         //    , (&mainShmem[begResShmem]),
-                        //    cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                        //     (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
                         //    , pipeline);
 
 
@@ -1618,26 +1594,23 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
 
 
-                        pipeline.consumer_release();
 
                         __syncthreads();
 
                         //////// step 8 basically in order to complete here anyting the count need to be bigger than counter
                                                       // loading for next block if block is not to be validated it was already done earlier
-                        pipeline.producer_acquire();
                         if (localBlockMetaData[(i & 1) * 20 + ((1 - isGoldForLocQueue[i]) + 1)] //fp for gold and fn count for not gold
                             > localBlockMetaData[(i & 1) * 20 + ((1 - isGoldForLocQueue[i]) + 3)]) {// so count is bigger than counter so we should validate
                             if (i + 1 < worQueueStep[0]) {
 
 
-                                cuda::memcpy_async(cta, (&localBlockMetaData[((i + 1) & 1) * 20]),
+                                memcpy_async(cta, (&localBlockMetaData[((i + 1) & 1) * 20]),
                                     (&fbArgs.metaDataArrPointer[(mainShmem[startOfLocalWorkQ + 1 + i])
                                         * fbArgs.metaData.metaDataSectionLength])
-                                    , cuda::aligned_size_t<4>(sizeof(uint32_t) * 20), pipeline);
+                                    ,  (sizeof(uint32_t) * 20));
 
                             }
                         }
-                        pipeline.producer_commit();
 
 
 
@@ -1645,7 +1618,6 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                         __syncthreads();
 
                         //validation - so looking for newly covered voxel for opposite array so new fps or new fns
-                        pipeline.consumer_wait();
 
                         if (localBlockMetaData[(i & 1) * 20 + ((1 - isGoldForLocQueue[i]) + 1)] //fp for gold and fn count for not gold
                             > localBlockMetaData[(i & 1) * 20 + ((1 - isGoldForLocQueue[i]) + 3)]) {// so count is bigger than counter so we should validate
@@ -1686,7 +1658,6 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
                         }
                         /////////
-                        pipeline.consumer_release();
 
                         /// /// cleaning
 
@@ -1756,12 +1727,7 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
                 //here we are after all of the blocks planned to be processed by this block are
 
-                // just for pipeline to work
-                pipeline.consumer_wait();
 
-
-
-                pipeline.consumer_release();
 
             }
 
@@ -2029,7 +1995,7 @@ https://codingbyexample.com/2020/09/25/cuda-graph-usage/
 #pragma once
 template <typename T>
 ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int WIDTH, const int HEIGHT, const int DEPTH, occupancyCalcData& occData,
-    cudaStream_t stream, bool resToSave, float robustnessPercent, bool resIterNeeded) {
+    cudaStream_t stream, bool resToSave, float robustnessPercent, bool resIterNeeded, bool res3DNeeded) {
     fFArgs.robustnessPercent = robustnessPercent;
     T* goldArrPointer = (T*)fFArgs.goldArr.data_ptr();
     T* segmArrPointer = (T*)fFArgs.segmArr.data_ptr();
@@ -2052,7 +2018,7 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
         , fbArgs.minMaxes);
 
 
-    int fpPlusFn = allocateMemoryAfterBoolKernel(fbArgs, fFArgs, stream, resIterNeeded);
+    int fpPlusFn = allocateMemoryAfterBoolKernel(fbArgs, fFArgs, stream, resIterNeeded, res3DNeeded);
 
 
 
@@ -2069,7 +2035,11 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
         auto size = sizeof(int32_t) * fbArgs.resultListPointerIterNumbTensor.sizes()[0];
         cudaMemcpyAsync(fbArgs.resultListPointerIterNumbTensor.data_ptr(), fbArgs.resultListPointerIterNumb, size, cudaMemcpyDeviceToDevice, stream);
     }
-
+    if (res3DNeeded) {
+        auto size = sizeof(int32_t) * fbArgs.resultListPointerIterNumbTensor.sizes()[0];
+        cudaMemcpyAsync(fbArgs.resultListPointerLocalTensor.data_ptr(), fbArgs.resultListPointerLocal, size, cudaMemcpyDeviceToDevice, stream);
+        cudaMemcpyAsync(fbArgs.resultListPointerMetaTensor.data_ptr(), fbArgs.resultListPointerMeta, size, cudaMemcpyDeviceToDevice, stream);
+    }
 
     cudaFreeAsync(fbArgs.resultListPointerMeta, stream);
     cudaFreeAsync(fbArgs.resultListPointerLocal, stream);
@@ -2115,7 +2085,7 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
 template <typename T>
 int getHausdorffDistance_CUDA_Generic(at::Tensor goldStandard,
     at::Tensor algoOutput
-    , int WIDTH, int HEIGHT, int DEPTH, float robustnessPercent, bool resIterNeeded, at::Tensor numberToLookFor) {
+    , int WIDTH, int HEIGHT, int DEPTH, float robustnessPercent, bool resIterNeeded, at::Tensor numberToLookFor, bool res3DNeeded) {
     //TODO() use https ://pytorch.org/cppdocs/notes/tensor_cuda_stream.html
     cudaStream_t stream1;
     cudaStreamCreate(&stream1);
@@ -2133,7 +2103,7 @@ int getHausdorffDistance_CUDA_Generic(at::Tensor goldStandard,
 
     occupancyCalcData occData = getOccupancy<T>();
 
-    ForBoolKernelArgs<T> fbArgs = executeHausdoff(forFullBoolPrepArgs, WIDTH, HEIGHT, DEPTH, occData, stream1, false, robustnessPercent, resIterNeeded);
+    ForBoolKernelArgs<T> fbArgs = executeHausdoff(forFullBoolPrepArgs, WIDTH, HEIGHT, DEPTH, occData, stream1, false, robustnessPercent, resIterNeeded, res3DNeeded);
 
     size_t sizeMinMax = sizeof(unsigned int) * 20;
     //making sure we have all resultsto copy on cpu
@@ -2174,7 +2144,7 @@ at::Tensor getHausdorffDistance_CUDA_FullResList_local(at::Tensor goldStandard,
 
     occupancyCalcData occData = getOccupancy<T>();
 
-    ForBoolKernelArgs<T> fbArgs = executeHausdoff(forFullBoolPrepArgs, WIDTH, HEIGHT, DEPTH, occData, stream1, false, robustnessPercent, true);
+    ForBoolKernelArgs<T> fbArgs = executeHausdoff(forFullBoolPrepArgs, WIDTH, HEIGHT, DEPTH, occData, stream1, false, robustnessPercent, true, false);
 
 
 
@@ -2200,7 +2170,7 @@ int getHausdorffDistance_CUDA(at::Tensor goldStandard,
     int res = 0;
 
     AT_DISPATCH_ALL_TYPESWithBool(goldStandard.type(), "getHausdorffDistance_CUDA", ([&] {
-        res = getHausdorffDistance_CUDA_Generic<scalar_t>(goldStandard, algoOutput, WIDTH, HEIGHT, DEPTH, robustnessPercent, false, numberToLookFor);
+        res = getHausdorffDistance_CUDA_Generic<scalar_t>(goldStandard, algoOutput, WIDTH, HEIGHT, DEPTH, robustnessPercent, false, numberToLookFor,false);
 
         }));
     return res;
@@ -2230,391 +2200,503 @@ at::Tensor getHausdorffDistance_CUDA_FullResList(at::Tensor goldStandard,
  * ********************************/
 
 
- //	for (int i = 0; i < 5;i++) {
- //		if (resultListPointerLocalCPU[i]>0 || resultListPointerMetaCPU[i]>0) {
- //			uint32_t linIdexMeta = resultListPointerMetaCPU[i] - (isGoldOffset * (resultListPointerMetaCPU[i] >= isGoldOffset))-1;
- //			uint32_t xMeta = linIdexMeta % fbArgs.metaData.metaXLength;
- //			uint32_t zMeta = uint32_t(floor((float)(linIdexMeta / (fbArgs.metaData.metaXLength * fbArgs.metaData.MetaYLength))));
- //			uint32_t yMeta = uint32_t(floor((float)((linIdexMeta - ((zMeta * fbArgs.metaData.metaXLength * fbArgs.metaData.MetaYLength) + xMeta)) / fbArgs.metaData.metaXLength)));
- //			
- //			uint32_t linLocal = resultListPointerLocalCPU[i];
- //			uint32_t xLoc = linLocal % fbArgs.dbXLength;
- //			uint32_t zLoc = uint32_t(floor((float)(linLocal / (32 * fbArgs.dbYLength))));
- //			uint32_t yLoc = uint32_t(floor((float)((linLocal - ((zLoc * 32 * fbArgs.dbYLength) + xLoc)) / 32)));
- //
- //
- //			uint32_t x = xMeta * 32 + xLoc;
- //			uint32_t y= yMeta * fbArgs.dbYLength + yLoc;
- //			uint32_t z = zMeta * 32 + zLoc;
- //			uint32_t iterNumb  = resultListPointerIterNumbCPU[i];
- //
- //			printf("resullt linIdexMeta %d x %d y %d z %d  xMeta %d yMeta %d zMeta %d xLoc %d yLoc %d zLoc %d linLocal %d  iterNumb %d \n"
- //				,linIdexMeta
- //				,x,y,z
- //				,xMeta,yMeta, zMeta
- //				,xLoc,yLoc,zLoc
- //				, linLocal
- //				, iterNumb
- //
 
+/*
+on the basis of result lists return the location of each voxel that contributed to Hausdorff distance and how much it contributed
+fbArgs - struct with needed data
+resGold - tensor where output will be stored from gold mask dilatations
+resSegm - tensor where output will be stored from algorithm output dilatations
+len - length of result list we will iterate over
+*/
+template <typename T>
+__global__ void get3Dres_local_kernel(ForBoolKernelArgs<T> fbArgs, at::Tensor resGold, at::Tensor resSegm, int len) {
 
+    //simple grid stride loop
+    for (uint32_t i= blockIdx.x * blockDim.x + threadIdx.x ; i < len; i+= blockDim.x*gridDim.x) {        
+            if (fbArgs.resultListPointerLocal[i] > 0 || fbArgs.resultListPointerMeta[i] > 0) {
+                uint32_t linIdexMeta = fbArgs.resultListPointerMeta[i] - (isGoldOffset * (fbArgs.resultListPointerMeta[i] >= isGoldOffset)) - 1;
+                uint32_t xMeta = linIdexMeta % fbArgs.metaData.metaXLength;
+                uint32_t zMeta = uint32_t(floor((float)(linIdexMeta / (fbArgs.metaData.metaXLength * fbArgs.metaData.MetaYLength))));
+                uint32_t yMeta = uint32_t(floor((float)((linIdexMeta - ((zMeta * fbArgs.metaData.metaXLength * fbArgs.metaData.MetaYLength) + xMeta)) / fbArgs.metaData.metaXLength)));
 
+                auto linLocal = fbArgs.resultListPointerLocal[i];
+                auto xLoc = linLocal % fbArgs.dbXLength;
+                auto zLoc = uint32_t(floor((float)(linLocal / (32 * fbArgs.dbYLength))));
+                auto yLoc = uint32_t(floor((float)((linLocal - ((zLoc * 32 * fbArgs.dbYLength) + xLoc)) / 32)));
 
+                // setting appropriate  spot in the result to a given value
+                if (fbArgs.resultListPointerMeta[i] >= isGoldOffset) {
+                    //resGold.data_ptr()[(xMeta * 32 + xLoc) + (yMeta * fbArgs.dbYLength + yLoc) * fbArgs.Nx + (zMeta * 32 + zLoc) * fbArgs.Nx * fbArgs.Ny] = fbArgs.resultListPointerIterNumb[i]; // krowa
+                }
+                else {
+                    //resSegm.data_ptr()[(xMeta * 32 + xLoc) + (yMeta * fbArgs.dbYLength + yLoc) * fbArgs.Nx + (zMeta * 32 + zLoc) * fbArgs.Nx * fbArgs.Ny] = fbArgs.resultListPointerIterNumb[i]; //krowa
+                }
+                //uint32_t x = xMeta * 32 + xLoc;
+                //uint32_t y = yMeta * fbArgs.dbYLength + yLoc;
+                //uint32_t z = zMeta * 32 + zLoc;
+                //uint32_t iterNumb = fbArgs.resultListPointerIterNumb[i];
 
-
-
-/*************************************************************
-*Oliviera Algorithm
-*************************************************************************************/
-
-
-typedef unsigned char uchar;
-typedef unsigned int uint;
-#pragma once
-class Volume {
-
-private:
-    bool* volume;
-    int width, height, depth;
-    int getLinearIndex(int x, int y, int z);
-public:
-    bool getVoxelValue(int x, int y, int z);
-    bool getPixelValue(int x, int y);
-    uint getWidth();
-    uint getHeight();
-    uint getDepth();
-    bool* getVolume();
-    void setVoxelValue(bool value, int x, int y, int z);
-    void setPixelValue(bool value, int x, int y);
-    Volume(int width, int height, int depth);
-    Volume(int width, int height);
-    void dispose();
-
-};
-
-
-
-
-#define CUDA_DEVICE_INDEX 0 //setting the index of your CUDA device
-
-#define IS_3D 1 //setting this to 0 would grant a very slightly improvement on the performance if working with images only
-#define CHEBYSHEV 0 //if not set to 1, then this algorithm would use an Euclidean-like metric, it is just an approximation. 
-//It can be changed according to the structuring element
-#pragma once
-class HausdorffDistance {
-
-private:
-    void print(cudaError_t error, char* msg);
-
-public:
-    int computeDistance(Volume* img1, Volume* img2, bool* d_img1, bool* d_img2);
-
-};
-
-
-inline Volume::Volume(const int width, const int height, const int depth) {
-    this->width = width; this->height = height; this->depth = depth;
-    volume = (bool*)calloc(width * height * depth, sizeof(bool));
-}
-
-#pragma once
-inline Volume::Volume(const int width, const int height) {
-    this->width = width; this->height = height; this->depth = 1;
-    volume = (bool*)calloc(width * height * depth, sizeof(bool));
-}
-#pragma once
-inline int Volume::getLinearIndex(const int x, const int y, const int z) {
-    const int a = 1, b = width, c = (width) * (height);
-    return a * x + b * y + c * z;
-}
-
-inline uint Volume::getWidth() { return this->width; }
-inline uint Volume::getHeight() { return this->height; }
-inline uint Volume::getDepth() { return this->depth; }
-inline bool* Volume::getVolume() { return this->volume; }
-inline bool Volume::getPixelValue(int x, int y) { return this->volume[getLinearIndex(x, y, 0)]; }
-#pragma once
-inline bool Volume::getVoxelValue(int x, int y, int z) {
-    return volume[getLinearIndex(x, y, z)];
-}
-#pragma once
-inline void Volume::setPixelValue(bool value, const int x, const int y) {
-    volume[getLinearIndex(x, y, 0)] = value;
-}
-#pragma once
-inline void Volume::setVoxelValue(bool value, const int x, const int y, const int z) {
-    volume[getLinearIndex(x, y, z)] = value;
-}
-#pragma once
-inline void Volume::dispose() {
-    free(volume);
-}
-
-typedef unsigned char uchar;
-typedef unsigned int uint;
-
-#pragma once
-__device__ int finished; //global variable that contains a boolean which indicates when to stop the kernel processing
-#pragma once
-__constant__ __device__ int WIDTH, HEIGHT, DEPTH; //constant variables that contain the size of the volume
-
-
-#pragma once
-__global__ void dilate(const bool* IMG1, const bool* IMG2, const bool* img1Read, const bool* img2Read,
-    bool* img1Write, bool* img2Write) {
-
-    const int id = blockDim.x * blockIdx.x + threadIdx.x;
-#if !IS_3D
-    const int x = id % WIDTH, y = id / WIDTH;
-#else
-    const int x = id % WIDTH, y = (id / WIDTH) % HEIGHT, z = (id / WIDTH) / HEIGHT;
-#endif
-
-    if (id < WIDTH * HEIGHT * DEPTH) {
-
-
-        if (img1Read[id]) {
-            if (x + 1 < WIDTH) img1Write[id + 1] = true;
-            if (x - 1 >= 0) img1Write[id - 1] = true;
-            if (y + 1 < HEIGHT) img1Write[id + WIDTH] = true;
-            if (y - 1 >= 0) img1Write[id - WIDTH] = true;
-#if IS_3D //if working with 3d volumes, then the 3D part
-            if (z + 1 < DEPTH) img1Write[id + WIDTH * HEIGHT] = true;
-            if (z - 1 >= 0) img1Write[id - WIDTH * HEIGHT] = true;
-#endif
-
-#if CHEBYSHEV
-            //diagonals
-            if (x + 1 < WIDTH && y - 1 >= 0) img1Write[id - WIDTH + 1] = true;
-            if (x - 1 >= 0 && y - 1 >= 0) img1Write[id - WIDTH - 1] = true;
-            if (x + 1 < WIDTH && y + 1 < HEIGHT) img1Write[id + WIDTH + 1] = true;
-            if (x - 1 >= 0 && y + 1 < HEIGHT) img1Write[id + WIDTH - 1] = true;
-#if IS_3D //if working with 3d volumes, then the 3D part
-            if (z + 1 < DEPTH && x + 1 < WIDTH && y - 1 >= 0) img1Write[id - WIDTH + 1 + WIDTH * HEIGHT] = true;
-            if (z + 1 < DEPTH && x - 1 >= 0 && y - 1 >= 0) img1Write[id - WIDTH - 1 + WIDTH * HEIGHT] = true;
-            if (z + 1 < DEPTH && x + 1 < WIDTH && y + 1 < HEIGHT) img1Write[id + WIDTH + 1 + WIDTH * HEIGHT] = true;
-            if (z + 1 < DEPTH && x - 1 >= 0 && y + 1 < HEIGHT) img1Write[id + WIDTH - 1 + WIDTH * HEIGHT] = true;
-            if (z - 1 >= 0 && x + 1 < WIDTH && y - 1 >= 0) img1Write[id - WIDTH + 1 - WIDTH * HEIGHT] = true;
-            if (z - 1 >= 0 && x - 1 >= 0 && y - 1 >= 0) img1Write[id - WIDTH - 1 - WIDTH * HEIGHT] = true;
-            if (z - 1 >= 0 && x + 1 < WIDTH && y + 1 < HEIGHT) img1Write[id + WIDTH + 1 - WIDTH * HEIGHT] = true;
-            if (z - 1 >= 0 && x - 1 >= 0 && y + 1 < HEIGHT) img1Write[id + WIDTH - 1 - WIDTH * HEIGHT] = true;
-#endif
-#endif
-        }
-
-
-        if (img2Read[id]) {
-            if (x + 1 < WIDTH) img2Write[id + 1] = true;
-            if (x - 1 >= 0) img2Write[id - 1] = true;
-            if (y + 1 < HEIGHT) img2Write[id + WIDTH] = true;
-            if (y - 1 >= 0) img2Write[id - WIDTH] = true;
-#if IS_3D //if working with 3d volumes, then the 3D part
-            if (z + 1 < DEPTH) img2Write[id + WIDTH * HEIGHT] = true;
-            if (z - 1 >= 0) img2Write[id - WIDTH * HEIGHT] = true;
-#endif
-
-#if CHEBYSHEV
-            //diagonals
-            if (x + 1 < WIDTH && y - 1 >= 0) img2Write[id - WIDTH + 1] = true;
-            if (x - 1 >= 0 && y - 1 >= 0) img2Write[id - WIDTH - 1] = true;
-            if (x + 1 < WIDTH && y + 1 < HEIGHT) img2Write[id + WIDTH + 1] = true;
-            if (x - 1 >= 0 && y + 1 < HEIGHT) img2Write[id + WIDTH - 1] = true;
-#if IS_3D //if working with 3d volumes, then the 3D part
-            if (z + 1 < DEPTH && x + 1 < WIDTH && y - 1 >= 0) img2Write[id - WIDTH + 1 + WIDTH * HEIGHT] = true;
-            if (z + 1 < DEPTH && x - 1 >= 0 && y - 1 >= 0) img2Write[id - WIDTH - 1 + WIDTH * HEIGHT] = true;
-            if (z + 1 < DEPTH && x + 1 < WIDTH && y + 1 < HEIGHT) img2Write[id + WIDTH + 1 + WIDTH * HEIGHT] = true;
-            if (z + 1 < DEPTH && x - 1 >= 0 && y + 1 < HEIGHT) img2Write[id + WIDTH - 1 + WIDTH * HEIGHT] = true;
-            if (z - 1 >= 0 && x + 1 < WIDTH && y - 1 >= 0) img2Write[id - WIDTH + 1 - WIDTH * HEIGHT] = true;
-            if (z - 1 >= 0 && x - 1 >= 0 && y - 1 >= 0) img2Write[id - WIDTH - 1 - WIDTH * HEIGHT] = true;
-            if (z - 1 >= 0 && x + 1 < WIDTH && y + 1 < HEIGHT) img2Write[id + WIDTH + 1 - WIDTH * HEIGHT] = true;
-            if (z - 1 >= 0 && x - 1 >= 0 && y + 1 < HEIGHT) img2Write[id + WIDTH - 1 - WIDTH * HEIGHT] = true;
-#endif
-#endif
-        }
-
-
-        //this is an atomic and computed to the finished global variable, if image 1 contains all of image 2 and image 2 contains all pixels of
-        //image 1 then finished is true
-        atomicAnd(&finished, (img2Read[id] || !IMG1[id]) && (img1Read[id] || !IMG2[id]));
+                //printf("resullt linIdexMeta %d x %d y %d z %d  xMeta %d yMeta %d zMeta %d xLoc %d yLoc %d zLoc %d linLocal %d  iterNumb %d \n"
+                //    , linIdexMeta
+                //    , x, y, z
+                //    , xMeta, yMeta, zMeta
+                //    , xLoc, yLoc, zLoc
+                //    , linLocal
+                //    , iterNumb
+            }
     }
 }
 
-#pragma once
-int HausdorffDistance::computeDistance(Volume* img1, Volume* img2, bool* d_img1, bool* d_img2) {
 
-    const int height = (*img1).getHeight(), width = (*img1).getWidth(), depth = (*img1).getDepth();
-
-    size_t size = width * height * depth * sizeof(bool);
-
-    //getting details of your CUDA device
-    cudaDeviceProp props;
-    cudaGetDeviceProperties(&props, CUDA_DEVICE_INDEX); //device index = 0, you can change it if you have more CUDA devices
-    const int threadsPerBlock = props.maxThreadsPerBlock / 2;
-    const int blocksPerGrid = (height * width * depth + threadsPerBlock - 1) / threadsPerBlock;
-
-
-    //copying the dimensions to the GPU
-    cudaMemcpyToSymbolAsync(WIDTH, &width, sizeof(width), 0);
-    cudaMemcpyToSymbolAsync(HEIGHT, &height, sizeof(height), 0);
-    cudaMemcpyToSymbolAsync(DEPTH, &depth, sizeof(depth), 0);
-
-
-    //allocating the input images on the GPU
-
-
-
-    //allocating the images that will be the processing ones
-    bool* d_img1Write, * d_img1Read, * d_img2Write, * d_img2Read;
-    cudaMalloc(&d_img1Write, size); cudaMalloc(&d_img1Read, size);
-    cudaMalloc(&d_img2Write, size); cudaMalloc(&d_img2Read, size);
-
-
-    //cloning the input images to these two image versions (write and read)
-    cudaMemcpyAsync(d_img1Read, d_img1, size, cudaMemcpyDeviceToDevice);
-    cudaMemcpyAsync(d_img2Read, d_img2, size, cudaMemcpyDeviceToDevice);
-    cudaMemcpyAsync(d_img1Write, d_img1, size, cudaMemcpyDeviceToDevice);
-    cudaMemcpyAsync(d_img2Write, d_img2, size, cudaMemcpyDeviceToDevice);
-
-
-
-    //required variables to compute the distance
-    int h_finished = false, t = true;
-    int distance = -1;
-
-    //where the magic happens
-    while (!h_finished) {
-        //reset the bool variable that verifies if the processing ended
-        cudaMemcpyToSymbol(finished, &t, sizeof(h_finished));
-
-
-        //lauching the verify kernel, which verifies if the processing finished
-        dilate << < blocksPerGrid, threadsPerBlock >> > (d_img1, d_img2, d_img1Read, d_img2Read, d_img1Write, d_img2Write);
-
-        //cudaDeviceSynchronize();
-
-        //updating the imgRead (cloning imgWrite to imgRead)
-        cudaMemcpy(d_img1Read, d_img1Write, size, cudaMemcpyDeviceToDevice);
-        cudaMemcpy(d_img2Read, d_img2Write, size, cudaMemcpyDeviceToDevice);
-
-        //copying the result back to host memory
-        cudaMemcpyFromSymbol(&h_finished, finished, sizeof(h_finished));
-
-
-        //incrementing the distance at each iteration
-        distance++;
+/*
+takes two 3D tensord and computes the element wise avarage from two entries and save result in resGold
+voxelsNumber - number of voxel in resGold = resSegm
+*/
+template <typename T>
+__global__ void elementWiseAverage(ForBoolKernelArgs<T> fbArgs, at::Tensor resGold, at::Tensor resSegm, int voxelsNumber) {
+    for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < voxelsNumber; i += blockDim.x * gridDim.x) {
+        //((float_t)data_ptr())[i] = (((float_t)resGold.data_ptr()[i]) + ((float_t)resSegm.data_ptr()[i])) / 2;
+    }
     }
 
-
-    //freeing memory
-    cudaFree(d_img1); cudaFree(d_img2);
-    cudaFree(d_img1Write); cudaFree(d_img1Read);
-    cudaFree(d_img2Write); cudaFree(d_img2Read);
-
-    //resetting device
-   // cudaDeviceReset();
-
-    //print(cudaGetLastError(), "processing CUDA. Something may be wrong with your CUDA device.");
-
-    return distance;
-
-}
-#pragma once
-inline void HausdorffDistance::print(cudaError_t error, char* msg) {
-    if (error != cudaSuccess)
-    {
-        printf("Error on %s ", msg);
-        fprintf(stderr, "Error code: %s!\n", cudaGetErrorString(error));
-        exit(EXIT_FAILURE);
-    }
-}
 
 
 
 /*
-benchmark for original code from  https://github.com/Oyatsumi/HausdorffDistanceComparison
+3D tensor with data how much given voxel contributed to result in gold mask segmentations  other mask dilatations (the mean of those)
 */
-std::tuple<int, double> benchmarkOlivieraCUDA(torch::Tensor goldStandardA,
-    torch::Tensor algoOutputA, int WIDTH, int HEIGHT
-    , int DEPTH) {
+template <typename T>
+at::Tensor getHausdorffDistance_CUDA_3Dres_local(at::Tensor goldStandard,
+    at::Tensor algoOutput
+    , int WIDTH, int HEIGHT, int DEPTH, float robustnessPercent, at::Tensor numberToLookFor) {
+    //TODO() use https ://pytorch.org/cppdocs/notes/tensor_cuda_stream.html
+    cudaStream_t stream1;
+    cudaStreamCreate(&stream1);
 
-    //just originally it started for cpu so ...
+    MetaDataCPU metaData;
+    //size_t size = sizeof(unsigned int) * 20;
+    //unsigned int* minMaxesCPU = (unsigned int*)malloc(size);
+    //metaData.minMaxes = minMaxesCPU;
 
-    int lenn = WIDTH * HEIGHT * DEPTH;
-    size_t sizee = sizeof(bool) * lenn;
+    ForFullBoolPrepArgs<T> forFullBoolPrepArgs;
+    forFullBoolPrepArgs.metaData = metaData;
+    forFullBoolPrepArgs.numberToLookFor = numberToLookFor.item<T>();
+    forFullBoolPrepArgs.goldArr = goldStandard;
+    forFullBoolPrepArgs.segmArr = algoOutput;
 
+    occupancyCalcData occData = getOccupancy<T>();
 
-
-    bool* goldStandard = (bool*)calloc(lenn, sizeof(bool));
-    bool* algoOutput = (bool*)calloc(lenn, sizeof(bool));
-
-    cudaMemcpy(goldStandard, goldStandardA.data_ptr(), sizee, cudaMemcpyDeviceToHost);
-    cudaMemcpy(algoOutput, algoOutputA.data_ptr(), sizee, cudaMemcpyDeviceToHost);
-
-
-    //auto goldStandardA.data_ptr()
-
-
-    //bool* goldStandard = (bool*)goldStandardA.to(torch::kCPU).data_ptr();
-    //bool* algoOutput = (bool*)algoOutputA.to(torch::kCPU).data_ptr();
-
+    ForBoolKernelArgs<T> fbArgs = executeHausdoff(forFullBoolPrepArgs, WIDTH, HEIGHT, DEPTH, occData, stream1, false, robustnessPercent, true,true);
 
 
-    Volume img1 = Volume(WIDTH, HEIGHT, DEPTH), img2 = Volume(WIDTH, HEIGHT, DEPTH);
+    auto options =
+        torch::TensorOptions()
+        .dtype(torch::kFloat32)
+        .device(torch::kCUDA, 0)
+        .requires_grad(false);
 
-    for (int x = 0; x < WIDTH; x++) {
-        for (int y = 0; y < HEIGHT; y++) {
-            for (int z = 0; z < DEPTH; z++) {
-                img1.setVoxelValue(algoOutput[x + y * WIDTH + z * WIDTH * HEIGHT], x, y, z);
-                img2.setVoxelValue(goldStandard[x + y * WIDTH + z * WIDTH * HEIGHT], x, y, z);
-            }
-        }
-    }
+    at::Tensor resGold = torch::zeros({ WIDTH, HEIGHT, DEPTH }, options);
+    at::Tensor resSegm = torch::zeros({ WIDTH, HEIGHT, DEPTH }, options);
 
-    size_t size = WIDTH * HEIGHT * DEPTH * sizeof(bool);
+    int len = fbArgs.resultListPointerIterNumbTensor.sizes()[0];
+    
+    //occupancy calculator
+    int minGridSize=0;
+    int blockSize=0;
+    cudaOccupancyMaxPotentialBlockSize(
+        &minGridSize,
+        &blockSize,
+        (void*)get3Dres_local_kernel<T>,
+        0);
 
+    //simple one dimensional kernel
+    get3Dres_local_kernel << <minGridSize, blockSize, 0, stream1 >> > (fbArgs, resGold, resSegm, len);
 
-    bool* d_img1, * d_img2;
-    cudaMalloc(&d_img1, size);
-    cudaMalloc(&d_img2, size);
-
-
-    //copying the data to the allocated memory on the GPU
-    cudaMemcpyAsync(d_img1, (img1).getVolume(), size, cudaMemcpyHostToDevice);
-    cudaMemcpyAsync(d_img2, (img2).getVolume(), size, cudaMemcpyHostToDevice);
-
-
-    auto begin = std::chrono::high_resolution_clock::now();
-    HausdorffDistance* hd = new HausdorffDistance();
-
-    cudaDeviceSynchronize();
-
-    int dist = (*hd).computeDistance(&img1, &img2, d_img1, d_img2);
-    cudaDeviceSynchronize();
+    //get element wise average
+    elementWiseAverage<<<minGridSize, blockSize, 0, stream1 >>>(fbArgs, resGold, resSegm, WIDTH* HEIGHT* DEPTH);
 
 
-    auto end = std::chrono::high_resolution_clock::now();
+    cudaFreeAsync(fbArgs.minMaxes, stream1);
 
+    cudaStreamDestroy(stream1);
 
+    return  resGold;
 
-    // std::cout << "Total elapsed time: ";
-    double time = (double)(std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / (double)1000000000);
-    //std::cout << time << "s" << std::endl;
-
-   // printf("HD: %d \n", dist);
-
-
-
-    //freeing memory
-    img1.dispose(); img2.dispose();
-    free(goldStandard);
-    free(algoOutput);
-    //Datasize: 216530944
-   //Datasize : 216530944
-    //Total elapsed time : 2.62191s
-    //HD : 234
-    return { dist, time };
 }
 
 
 
+at::Tensor getHausdorffDistance_CUDA_3Dres(at::Tensor goldStandard,
+    at::Tensor algoOutput
+    , const int WIDTH, const  int HEIGHT, const  int DEPTH
+    , const float robustnessPercent, at::Tensor numberToLookFor) {
 
+
+    at::Tensor res;
+    AT_DISPATCH_ALL_TYPESWithBool(goldStandard.type(), "getHausdorffDistance_CUDA_3Dres_local", ([&] {
+        res = getHausdorffDistance_CUDA_3Dres_local<scalar_t>(goldStandard, algoOutput, WIDTH, HEIGHT, DEPTH, robustnessPercent, numberToLookFor);
+
+        }));
+
+    return res;
+
+}
+
+
+
+//
+//
+//
+//
+//
+///*************************************************************
+//*Oliviera Algorithm
+//*************************************************************************************/
+//
+//
+//typedef unsigned char uchar;
+//typedef unsigned int uint;
+//#pragma once
+//class Volume {
+//
+//private:
+//    bool* volume;
+//    int width, height, depth;
+//    int getLinearIndex(int x, int y, int z);
+//public:
+//    bool getVoxelValue(int x, int y, int z);
+//    bool getPixelValue(int x, int y);
+//    uint getWidth();
+//    uint getHeight();
+//    uint getDepth();
+//    bool* getVolume();
+//    void setVoxelValue(bool value, int x, int y, int z);
+//    void setPixelValue(bool value, int x, int y);
+//    Volume(int width, int height, int depth);
+//    Volume(int width, int height);
+//    void dispose();
+//
+//};
+//
+//
+//
+//
+//#define CUDA_DEVICE_INDEX 0 //setting the index of your CUDA device
+//
+//#define IS_3D 1 //setting this to 0 would grant a very slightly improvement on the performance if working with images only
+//#define CHEBYSHEV 0 //if not set to 1, then this algorithm would use an Euclidean-like metric, it is just an approximation. 
+////It can be changed according to the structuring element
+//#pragma once
+//class HausdorffDistance {
+//
+//private:
+//    void print(cudaError_t error, char* msg);
+//
+//public:
+//    int computeDistance(Volume* img1, Volume* img2, bool* d_img1, bool* d_img2);
+//
+//};
+//
+//
+//
+//#pragma once
+//inline Volume::Volume(const int width, const int height) {
+//    this->width = width; this->height = height; this->depth = 1;
+//    volume = (bool*)calloc(width * height * depth, sizeof(bool));
+//}
+//#pragma once
+//inline int Volume::getLinearIndex(const int x, const int y, const int z) {
+//    const int a = 1, b = width, c = (width) * (height);
+//    return a * x + b * y + c * z;
+//}
+//
+//inline uint Volume::getWidth() { return this->width; }
+//inline uint Volume::getHeight() { return this->height; }
+//inline uint Volume::getDepth() { return this->depth; }
+//inline bool* Volume::getVolume() { return this->volume; }
+//inline bool Volume::getPixelValue(int x, int y) { return this->volume[getLinearIndex(x, y, 0)]; }
+//#pragma once
+//inline bool Volume::getVoxelValue(int x, int y, int z) {
+//    return volume[getLinearIndex(x, y, z)];
+//}
+//#pragma once
+//inline void Volume::setPixelValue(bool value, const int x, const int y) {
+//    volume[getLinearIndex(x, y, 0)] = value;
+//}
+//#pragma once
+//inline void Volume::setVoxelValue(bool value, const int x, const int y, const int z) {
+//    volume[getLinearIndex(x, y, z)] = value;
+//}
+//#pragma once
+//inline void Volume::dispose() {
+//    free(volume);
+//}
+//
+//typedef unsigned char uchar;
+//typedef unsigned int uint;
+//
+//#pragma once
+//__device__ int finished; //global variable that contains a boolean which indicates when to stop the kernel processing
+//#pragma once
+//__constant__ __device__ int WIDTH, HEIGHT, DEPTH; //constant variables that contain the size of the volume
+//
+//
+//#pragma once
+//__global__ void dilate(const bool* IMG1, const bool* IMG2, const bool* img1Read, const bool* img2Read,
+//    bool* img1Write, bool* img2Write) {
+//
+//    const int id = blockDim.x * blockIdx.x + threadIdx.x;
+//#if !IS_3D
+//    const int x = id % WIDTH, y = id / WIDTH;
+//#else
+//    const int x = id % WIDTH, y = (id / WIDTH) % HEIGHT, z = (id / WIDTH) / HEIGHT;
+//#endif
+//
+//    if (id < WIDTH * HEIGHT * DEPTH) {
+//
+//
+//        if (img1Read[id]) {
+//            if (x + 1 < WIDTH) img1Write[id + 1] = true;
+//            if (x - 1 >= 0) img1Write[id - 1] = true;
+//            if (y + 1 < HEIGHT) img1Write[id + WIDTH] = true;
+//            if (y - 1 >= 0) img1Write[id - WIDTH] = true;
+//#if IS_3D //if working with 3d volumes, then the 3D part
+//            if (z + 1 < DEPTH) img1Write[id + WIDTH * HEIGHT] = true;
+//            if (z - 1 >= 0) img1Write[id - WIDTH * HEIGHT] = true;
+//#endif
+//
+//#if CHEBYSHEV
+//            //diagonals
+//            if (x + 1 < WIDTH && y - 1 >= 0) img1Write[id - WIDTH + 1] = true;
+//            if (x - 1 >= 0 && y - 1 >= 0) img1Write[id - WIDTH - 1] = true;
+//            if (x + 1 < WIDTH && y + 1 < HEIGHT) img1Write[id + WIDTH + 1] = true;
+//            if (x - 1 >= 0 && y + 1 < HEIGHT) img1Write[id + WIDTH - 1] = true;
+//#if IS_3D //if working with 3d volumes, then the 3D part
+//            if (z + 1 < DEPTH && x + 1 < WIDTH && y - 1 >= 0) img1Write[id - WIDTH + 1 + WIDTH * HEIGHT] = true;
+//            if (z + 1 < DEPTH && x - 1 >= 0 && y - 1 >= 0) img1Write[id - WIDTH - 1 + WIDTH * HEIGHT] = true;
+//            if (z + 1 < DEPTH && x + 1 < WIDTH && y + 1 < HEIGHT) img1Write[id + WIDTH + 1 + WIDTH * HEIGHT] = true;
+//            if (z + 1 < DEPTH && x - 1 >= 0 && y + 1 < HEIGHT) img1Write[id + WIDTH - 1 + WIDTH * HEIGHT] = true;
+//            if (z - 1 >= 0 && x + 1 < WIDTH && y - 1 >= 0) img1Write[id - WIDTH + 1 - WIDTH * HEIGHT] = true;
+//            if (z - 1 >= 0 && x - 1 >= 0 && y - 1 >= 0) img1Write[id - WIDTH - 1 - WIDTH * HEIGHT] = true;
+//            if (z - 1 >= 0 && x + 1 < WIDTH && y + 1 < HEIGHT) img1Write[id + WIDTH + 1 - WIDTH * HEIGHT] = true;
+//            if (z - 1 >= 0 && x - 1 >= 0 && y + 1 < HEIGHT) img1Write[id + WIDTH - 1 - WIDTH * HEIGHT] = true;
+//#endif
+//#endif
+//        }
+//
+//
+//        if (img2Read[id]) {
+//            if (x + 1 < WIDTH) img2Write[id + 1] = true;
+//            if (x - 1 >= 0) img2Write[id - 1] = true;
+//            if (y + 1 < HEIGHT) img2Write[id + WIDTH] = true;
+//            if (y - 1 >= 0) img2Write[id - WIDTH] = true;
+//#if IS_3D //if working with 3d volumes, then the 3D part
+//            if (z + 1 < DEPTH) img2Write[id + WIDTH * HEIGHT] = true;
+//            if (z - 1 >= 0) img2Write[id - WIDTH * HEIGHT] = true;
+//#endif
+//
+//#if CHEBYSHEV
+//            //diagonals
+//            if (x + 1 < WIDTH && y - 1 >= 0) img2Write[id - WIDTH + 1] = true;
+//            if (x - 1 >= 0 && y - 1 >= 0) img2Write[id - WIDTH - 1] = true;
+//            if (x + 1 < WIDTH && y + 1 < HEIGHT) img2Write[id + WIDTH + 1] = true;
+//            if (x - 1 >= 0 && y + 1 < HEIGHT) img2Write[id + WIDTH - 1] = true;
+//#if IS_3D //if working with 3d volumes, then the 3D part
+//            if (z + 1 < DEPTH && x + 1 < WIDTH && y - 1 >= 0) img2Write[id - WIDTH + 1 + WIDTH * HEIGHT] = true;
+//            if (z + 1 < DEPTH && x - 1 >= 0 && y - 1 >= 0) img2Write[id - WIDTH - 1 + WIDTH * HEIGHT] = true;
+//            if (z + 1 < DEPTH && x + 1 < WIDTH && y + 1 < HEIGHT) img2Write[id + WIDTH + 1 + WIDTH * HEIGHT] = true;
+//            if (z + 1 < DEPTH && x - 1 >= 0 && y + 1 < HEIGHT) img2Write[id + WIDTH - 1 + WIDTH * HEIGHT] = true;
+//            if (z - 1 >= 0 && x + 1 < WIDTH && y - 1 >= 0) img2Write[id - WIDTH + 1 - WIDTH * HEIGHT] = true;
+//            if (z - 1 >= 0 && x - 1 >= 0 && y - 1 >= 0) img2Write[id - WIDTH - 1 - WIDTH * HEIGHT] = true;
+//            if (z - 1 >= 0 && x + 1 < WIDTH && y + 1 < HEIGHT) img2Write[id + WIDTH + 1 - WIDTH * HEIGHT] = true;
+//            if (z - 1 >= 0 && x - 1 >= 0 && y + 1 < HEIGHT) img2Write[id + WIDTH - 1 - WIDTH * HEIGHT] = true;
+//#endif
+//#endif
+//        }
+//
+//
+//        //this is an atomic and computed to the finished global variable, if image 1 contains all of image 2 and image 2 contains all pixels of
+//        //image 1 then finished is true
+//        atomicAnd(&finished, (img2Read[id] || !IMG1[id]) && (img1Read[id] || !IMG2[id]));
+//    }
+//}
+//
+//#pragma once
+//int HausdorffDistance::computeDistance(Volume* img1, Volume* img2, bool* d_img1, bool* d_img2) {
+//
+//    const int height = (*img1).getHeight(), width = (*img1).getWidth(), depth = (*img1).getDepth();
+//
+//    size_t size = width * height * depth * sizeof(bool);
+//
+//    //getting details of your CUDA device
+//    cudaDeviceProp props;
+//    cudaGetDeviceProperties(&props, CUDA_DEVICE_INDEX); //device index = 0, you can change it if you have more CUDA devices
+//    const int threadsPerBlock = props.maxThreadsPerBlock / 2;
+//    const int blocksPerGrid = (height * width * depth + threadsPerBlock - 1) / threadsPerBlock;
+//
+//
+//    //copying the dimensions to the GPU
+//    cudaMemcpyToSymbolAsync(WIDTH, &width, sizeof(width), 0);
+//    cudaMemcpyToSymbolAsync(HEIGHT, &height, sizeof(height), 0);
+//    cudaMemcpyToSymbolAsync(DEPTH, &depth, sizeof(depth), 0);
+//
+//
+//    //allocating the input images on the GPU
+//
+//
+//
+//    //allocating the images that will be the processing ones
+//    bool* d_img1Write, * d_img1Read, * d_img2Write, * d_img2Read;
+//    cudaMalloc(&d_img1Write, size); cudaMalloc(&d_img1Read, size);
+//    cudaMalloc(&d_img2Write, size); cudaMalloc(&d_img2Read, size);
+//
+//
+//    //cloning the input images to these two image versions (write and read)
+//    cudaMemcpyAsync(d_img1Read, d_img1, size, cudaMemcpyDeviceToDevice);
+//    cudaMemcpyAsync(d_img2Read, d_img2, size, cudaMemcpyDeviceToDevice);
+//    cudaMemcpyAsync(d_img1Write, d_img1, size, cudaMemcpyDeviceToDevice);
+//    cudaMemcpyAsync(d_img2Write, d_img2, size, cudaMemcpyDeviceToDevice);
+//
+//
+//
+//    //required variables to compute the distance
+//    int h_finished = false, t = true;
+//    int distance = -1;
+//
+//    //where the magic happens
+//    while (!h_finished) {
+//        //reset the bool variable that verifies if the processing ended
+//        cudaMemcpyToSymbol(finished, &t, sizeof(h_finished));
+//
+//
+//        //lauching the verify kernel, which verifies if the processing finished
+//        dilate << < blocksPerGrid, threadsPerBlock >> > (d_img1, d_img2, d_img1Read, d_img2Read, d_img1Write, d_img2Write);
+//
+//        //cudaDeviceSynchronize();
+//
+//        //updating the imgRead (cloning imgWrite to imgRead)
+//        cudaMemcpy(d_img1Read, d_img1Write, size, cudaMemcpyDeviceToDevice);
+//        cudaMemcpy(d_img2Read, d_img2Write, size, cudaMemcpyDeviceToDevice);
+//
+//        //copying the result back to host memory
+//        cudaMemcpyFromSymbol(&h_finished, finished, sizeof(h_finished));
+//
+//
+//        //incrementing the distance at each iteration
+//        distance++;
+//    }
+//
+//
+//    //freeing memory
+//    cudaFree(d_img1); cudaFree(d_img2);
+//    cudaFree(d_img1Write); cudaFree(d_img1Read);
+//    cudaFree(d_img2Write); cudaFree(d_img2Read);
+//
+//    //resetting device
+//   // cudaDeviceReset();
+//
+//    //print(cudaGetLastError(), "processing CUDA. Something may be wrong with your CUDA device.");
+//
+//    return distance;
+//
+//}
+//#pragma once
+//inline void HausdorffDistance::print(cudaError_t error, char* msg) {
+//    if (error != cudaSuccess)
+//    {
+//        printf("Error on %s ", msg);
+//        fprintf(stderr, "Error code: %s!\n", cudaGetErrorString(error));
+//        exit(EXIT_FAILURE);
+//    }
+//}
+//
+//
+//
+///*
+//benchmark for original code from  https://github.com/Oyatsumi/HausdorffDistanceComparison
+//*/
+//std::tuple<int, double> benchmarkOlivieraCUDA(torch::Tensor goldStandardA,
+//    torch::Tensor algoOutputA, int WIDTH, int HEIGHT
+//    , int DEPTH) {
+//
+//    //just originally it started for cpu so ...
+//
+//    int lenn = WIDTH * HEIGHT * DEPTH;
+//    size_t sizee = sizeof(bool) * lenn;
+//
+//
+//
+//    bool* goldStandard = (bool*)calloc(lenn, sizeof(bool));
+//    bool* algoOutput = (bool*)calloc(lenn, sizeof(bool));
+//
+//    cudaMemcpy(goldStandard, goldStandardA.data_ptr(), sizee, cudaMemcpyDeviceToHost);
+//    cudaMemcpy(algoOutput, algoOutputA.data_ptr(), sizee, cudaMemcpyDeviceToHost);
+//
+//
+//    //auto goldStandardA.data_ptr()
+//
+//
+//    //bool* goldStandard = (bool*)goldStandardA.to(torch::kCPU).data_ptr();
+//    //bool* algoOutput = (bool*)algoOutputA.to(torch::kCPU).data_ptr();
+//
+//
+//
+//    Volume img1 = Volume(WIDTH, HEIGHT, DEPTH), img2 = Volume(WIDTH, HEIGHT, DEPTH);
+//
+//    for (int x = 0; x < WIDTH; x++) {
+//        for (int y = 0; y < HEIGHT; y++) {
+//            for (int z = 0; z < DEPTH; z++) {
+//                img1.setVoxelValue(algoOutput[x + y * WIDTH + z * WIDTH * HEIGHT], x, y, z);
+//                img2.setVoxelValue(goldStandard[x + y * WIDTH + z * WIDTH * HEIGHT], x, y, z);
+//            }
+//        }
+//    }
+//
+//    size_t size = WIDTH * HEIGHT * DEPTH * sizeof(bool);
+//
+//
+//    bool* d_img1, * d_img2;
+//    cudaMalloc(&d_img1, size);
+//    cudaMalloc(&d_img2, size);
+//
+//
+//    //copying the data to the allocated memory on the GPU
+//    cudaMemcpyAsync(d_img1, (img1).getVolume(), size, cudaMemcpyHostToDevice);
+//    cudaMemcpyAsync(d_img2, (img2).getVolume(), size, cudaMemcpyHostToDevice);
+//
+//
+//    auto begin = std::chrono::high_resolution_clock::now();
+//    HausdorffDistance* hd = new HausdorffDistance();
+//
+//    cudaDeviceSynchronize();
+//
+//    int dist = (*hd).computeDistance(&img1, &img2, d_img1, d_img2);
+//    cudaDeviceSynchronize();
+//
+//
+//    auto end = std::chrono::high_resolution_clock::now();
+//
+//
+//
+//    // std::cout << "Total elapsed time: ";
+//    double time = (double)(std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / (double)1000000000);
+//    //std::cout << time << "s" << std::endl;
+//
+//   // printf("HD: %d \n", dist);
+//
+//
+//
+//    //freeing memory
+//    img1.dispose(); img2.dispose();
+//    free(goldStandard);
+//    free(algoOutput);
+//    //Datasize: 216530944
+//   //Datasize : 216530944
+//    //Total elapsed time : 2.62191s
+//    //HD : 234
+//    return { dist, time };
+//}
+//
+//
+//
+//
