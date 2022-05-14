@@ -24,6 +24,10 @@ DEPTH = 371;
 #print(np.sum(algoOuttD))
 #print(np.sum(golddD))
 
+# import gspread as gspread
+# import pymia
+# import csv
+# import pandas as pd
 
  # median version
 def mymedianHd(a, b,  WIDTH,  HEIGHT,  DEPTH):
