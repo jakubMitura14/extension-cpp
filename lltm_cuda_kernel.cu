@@ -12,12 +12,14 @@
 #include <torch/extension.h>
 //#include <ATen/ATen.h>
 #include <torch/torch.h>
+
 #include <cuda.h>
 #include <cuda_runtime.h>
 
 #include <cstdint>
 #include <cooperative_groups.h>
 //#include <cooperative_groups/reduce.h>
+#include <cuda/pipeline>
 #include <vector>
 //#include <cuda/annotated_ptr>
 #include <cooperative_groups/reduce.h>
@@ -188,6 +190,7 @@ struct ForBoolKernelArgs {
     torch::Tensor resultListPointerIterNumbTensor;
     torch::Tensor resultListPointerLocalTensor;
     torch::Tensor resultListPointerMetaTensor;
+
 
     uint32_t* origArrsPointer;
     uint32_t* mainArrAPointer;
@@ -540,9 +543,9 @@ __global__ void getMinMaxes(ForBoolKernelArgs<TYO> fbArgs
  * ********************************/
 
 
-/*
-iteration over metadata - becouse metadata may be small and to maximize occupancy we use linear index and then clalculate xMeta,ymeta,zMeta from this linear index ...
-*/
+ /*
+ iteration over metadata - becouse metadata may be small and to maximize occupancy we use linear index and then clalculate xMeta,ymeta,zMeta from this linear index ...
+ */
 #pragma once
 template <typename TYO>
 __global__ void boolPrepareKernel(ForBoolKernelArgs<TYO> fbArgs
@@ -763,11 +766,11 @@ __global__ void boolPrepareKernel(ForBoolKernelArgs<TYO> fbArgs
  * firstMetaPrepareKernel
  * ********************************/
 
-/*
-we add here to appropriate queue data  about metadata of blocks of intrest
-minMaxesPos- marks in minmaxes the postion of global offset counter -12) global FP offset 13) global FnOffset
-offsetMetadataArr- arrays from metadata holding data about result list offsets it can be either fbArgs.metaData.fpOffset or fbArgs.metaData.fnOffset
-*/
+ /*
+ we add here to appropriate queue data  about metadata of blocks of intrest
+ minMaxesPos- marks in minmaxes the postion of global offset counter -12) global FP offset 13) global FnOffset
+ offsetMetadataArr- arrays from metadata holding data about result list offsets it can be either fbArgs.metaData.fpOffset or fbArgs.metaData.fnOffset
+ */
 #pragma once
 __device__ inline void addToQueue(uint32_t linIdexMeta, uint8_t isGold
     , unsigned int fpFnLocCounter[1], uint32_t localWorkQueue[1600], uint32_t localOffsetQueue[1600], unsigned int localWorkQueueCounter[1]
@@ -838,7 +841,7 @@ __global__ void firstMetaPrepareKernel(ForBoolKernelArgs<PYO> fbArgs
     //main metadata iteration
     for (uint32_t linIdexMeta = blockIdx.x * blockDim.x + threadIdx.x; linIdexMeta < metaData.totalMetaLength; linIdexMeta += blockDim.x * gridDim.x) {
 
-         //goldpass
+        //goldpass
         addToQueue(linIdexMeta, 0
             , fpFnLocCounter, localWorkQueue, localOffsetQueue, localWorkQueueCounter
             , 1, 9, 6
@@ -855,7 +858,7 @@ __global__ void firstMetaPrepareKernel(ForBoolKernelArgs<PYO> fbArgs
     if ((threadIdx.x == 0)) {
         globalOffsetForBlock[0] = atomicAdd(&(minMaxes[12]), (fpFnLocCounter[0]));
 
-       };
+    };
     if ((threadIdx.x == 1)) {
         if (localWorkQueueCounter[0] > 0) {
             globalWorkQueueCounter[0] = atomicAdd(&(minMaxes[9]), (localWorkQueueCounter[0]));
@@ -868,7 +871,7 @@ __global__ void firstMetaPrepareKernel(ForBoolKernelArgs<PYO> fbArgs
     for (uint32_t i = threadIdx.x; i < localWorkQueueCounter[0]; i += blockDim.x) {
         workQueue[globalWorkQueueCounter[0] + i] = localWorkQueue[i];
 
-                //FP pass
+        //FP pass
         if (localWorkQueue[i] >= isGoldOffset) {
             metaDataArr[(localWorkQueue[i] - isGoldOffset) * metaData.metaDataSectionLength + 5] = localOffsetQueue[i] + globalOffsetForBlock[0];
         }
@@ -893,9 +896,9 @@ __global__ void firstMetaPrepareKernel(ForBoolKernelArgs<PYO> fbArgs
  * ********************************/
 
 
-/*
-Get arguments for kernels
-*/
+ /*
+ Get arguments for kernels
+ */
 #pragma once
 template <typename TCC>
 inline ForBoolKernelArgs<TCC> getArgsForKernel(ForFullBoolPrepArgs<TCC>& mainFunArgs
@@ -1053,7 +1056,6 @@ inline int allocateMemoryAfterBoolKernel(ForBoolKernelArgs<ZZR>& gpuArgs, ForFul
         gpuArgs.resultListPointerMetaTensor = resultListPointerMetaTensor;
     }
 
-
     auto xRange = gpuArgs.metaData.metaXLength;
     auto yRange = gpuArgs.metaData.MetaYLength;
     auto zRange = gpuArgs.metaData.MetaZLength;
@@ -1121,6 +1123,16 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
 
     constexpr size_t stages_count = 2; // Pipeline stages number
+
+    // Allocate shared storage for a two-stage cuda::pipeline:
+    __shared__ cuda::pipeline_shared_state<
+        cuda::thread_scope::thread_scope_block,
+        stages_count
+    > shared_state;
+
+    //cuda::pipeline<cuda::thread_scope_thread>  pipeline = cuda::make_pipeline(cta, &shared_state);
+    cuda::pipeline<cuda::thread_scope_block>  pipeline = cuda::make_pipeline(cta, &shared_state);
+
 
 
     //usefull for iterating through local work queue
@@ -1280,7 +1292,7 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
             };
 
             if (threadIdx.y == 1) {
-                cooperative_groups::memcpy_async(cta, (&localMinMaxes[0]), (&fbArgs.minMaxes[7]), (sizeof(unsigned int) * 5));
+                cooperative_groups::memcpy_async(cta, (&localMinMaxes[0]), (&fbArgs.minMaxes[7]), cuda::aligned_size_t<4>(sizeof(unsigned int) * 5));
             }
 
             __syncthreads();
@@ -1311,13 +1323,15 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
 
                 //loading metadata
+                pipeline.producer_acquire();
                 if (((bigloop) < localTotalLenthOfWorkQueue[0]) && ((bigloop) < ((blockIdx.x + 1) * globalWorkQueueOffset[0]))) {
 
-                    memcpy_async(cta, (&localBlockMetaData[0]),
+                    cuda::memcpy_async(cta, (&localBlockMetaData[0]),
                         (&fbArgs.metaDataArrPointer[mainShmem[startOfLocalWorkQ] * fbArgs.metaData.metaDataSectionLength])
-                        , (sizeof(uint32_t) * 20));
+                        , cuda::aligned_size_t<4>(sizeof(uint32_t) * 20), pipeline);
 
                 }
+                pipeline.producer_commit();
 
 
                 __syncthreads();
@@ -1331,40 +1345,53 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
 
 
-                        memcpy_async(cta, &mainShmem[begSourceShmem], &getSourceReduced(fbArgs, iterationNumb)[
+                        pipeline.producer_acquire();
+                        cuda::memcpy_async(cta, &mainShmem[begSourceShmem], &getSourceReduced(fbArgs, iterationNumb)[
                             mainShmem[startOfLocalWorkQ + i] * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])],
-                            (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength));
+                            cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength), pipeline);
+                        pipeline.producer_commit();
 
+                        //just so pipeline will work well
+                        pipeline.consumer_wait();
+
+
+
+                        pipeline.consumer_release();
                         __syncthreads();
 
                         ///////// step 1 load top and process main data
                                         //load top
+                        pipeline.producer_acquire();
                         if (localBlockMetaData[(i & 1) * 20 + 13] < isGoldOffset) {
-                            memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
+                            cuda::memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
                                 &getSourceReduced(fbArgs, iterationNumb)[localBlockMetaData[(i & 1) * 20 + 13]
                                 * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])],
-                                (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
-                                );
+                                cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                                , pipeline);
                         }
+                        pipeline.producer_commit();
                         //process main
+                        pipeline.consumer_wait();
                         //marking weather block is already full and no more dilatations are possible
                         if (__popc(mainShmem[begSourceShmem + threadIdx.x + threadIdx.y * 32]) < 32) {
                             isBlockFull[i & 1] = false;
                         }
                         mainShmem[begResShmem + threadIdx.x + threadIdx.y * 32] = bitDilatate(mainShmem[begSourceShmem + threadIdx.x + threadIdx.y * 32]);
-                        __syncthreads();
+                        pipeline.consumer_release();
 
                         ///////// step 2 load bottom and process top
                                         //load bottom
+                        pipeline.producer_acquire();
                         if (localBlockMetaData[(i & 1) * 20 + 14] < isGoldOffset) {
-                            memcpy_async(cta, (&mainShmem[begSecRegShmem]),
+                            cuda::memcpy_async(cta, (&mainShmem[begSecRegShmem]),
                                 &getSourceReduced(fbArgs, iterationNumb)[localBlockMetaData[(i & 1) * 20 + 14]
                                 * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])],
-                                 (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
-                                );
+                                cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                                , pipeline);
                         }
+                        pipeline.producer_commit();
                         //process top
-                        __syncthreads();
+                        pipeline.consumer_wait();
 
 
                         if (localBlockMetaData[(i & 1) * 20 + 13] < isGoldOffset) {
@@ -1376,17 +1403,20 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                             mainShmem[begResShmem + threadIdx.x + threadIdx.y * 32] |= ((mainShmem[begfirstRegShmem + threadIdx.x + threadIdx.y * 32] >> 31) & 1) << 0;
                         }
 
+                        pipeline.consumer_release();
                         __syncthreads();
 
                         /////////// step 3 load right  process bottom
+                        pipeline.producer_acquire();
                         if (localBlockMetaData[(i & 1) * 20 + 16] < isGoldOffset) {
-                            memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
+                            cuda::memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
                                 &getSourceReduced(fbArgs, iterationNumb)[localBlockMetaData[(i & 1) * 20 + 16] * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])],
-                                 (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
-                                );
+                                cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                                , pipeline);
                         }
+                        pipeline.producer_commit();
                         //process bototm
-                        __syncthreads();
+                        pipeline.consumer_wait();
 
 
                         if (localBlockMetaData[(i & 1) * 20 + 14] < isGoldOffset) {
@@ -1403,19 +1433,19 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                               , 0, 31
                               , begSecRegShmem, i);*/
 
-                        __syncthreads();
-
-
+                        pipeline.consumer_release();
                         /////////// step 4 load left process right
                                         //load left
+                        pipeline.producer_acquire();
                         if (mainShmem[startOfLocalWorkQ + i] > 0) {
-                            memcpy_async(cta, (&mainShmem[begSecRegShmem]),
+                            cuda::memcpy_async(cta, (&mainShmem[begSecRegShmem]),
                                 &getSourceReduced(fbArgs, iterationNumb)[(mainShmem[startOfLocalWorkQ + i] - 1) * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])],
-                                 (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
-                                );
+                                cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                                , pipeline);
                         }
+                        pipeline.producer_commit();
                         //process right
-                        __syncthreads();
+                        pipeline.consumer_wait();
 
                         if (threadIdx.x == (fbArgs.dbXLength - 1)) {
                             // now we need to load the data from the neigbouring blocks
@@ -1439,18 +1469,21 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
                         }
 
+                        pipeline.consumer_release();
                         __syncthreads();
                         /////// step 5 load anterior process left
                                         //load anterior
+                        pipeline.producer_acquire();
                         if (localBlockMetaData[(i & 1) * 20 + 17] < isGoldOffset) {
 
-                            memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
+                            cuda::memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
                                 &getSourceReduced(fbArgs, iterationNumb)[localBlockMetaData[(i & 1) * 20 + 17] * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])],
-                                 (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
-                                );
+                                cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                                , pipeline);
                         }
+                        pipeline.producer_commit();
                         //process left
-                        __syncthreads();
+                        pipeline.consumer_wait();
 
                         // so we first check for corner cases
                         if (threadIdx.x == 0) {
@@ -1476,21 +1509,24 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                         }
 
 
+                        pipeline.consumer_release();
                         __syncthreads();
 
                         /////// step 6 load posterior process anterior
                                         //load posterior
+                        pipeline.producer_acquire();
                         if (localBlockMetaData[(i & 1) * 20 + 18] < isGoldOffset) {
 
 
-                            memcpy_async(cta, (&mainShmem[begSecRegShmem]),
+                            cuda::memcpy_async(cta, (&mainShmem[begSecRegShmem]),
                                 &getSourceReduced(fbArgs, iterationNumb)[localBlockMetaData[(i & 1) * 20 + 18] * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])],
-                                 (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
-                                );
+                                cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                                , pipeline);
                         }
-                        __syncthreads();
+                        pipeline.producer_commit();
 
                         //process anterior
+                        pipeline.consumer_wait();
 
                         // so we first check for corner cases
                         if (threadIdx.y == (fbArgs.dbYLength - 1)) {
@@ -1516,37 +1552,40 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                         }
 
 
+                        pipeline.consumer_release();
                         __syncthreads();
 
                         /////// step 7
                                        //load reference if needed or data for next iteration if there is such
                                         //process posterior, save data from res shmem to global memory also we mark weather block is full
+                        pipeline.producer_acquire();
 
                         //if block should be validated we load data for validation
                         if (localBlockMetaData[(i & 1) * 20 + ((1 - isGoldForLocQueue[i]) + 1)] //fp for gold and fn count for not gold
                         > localBlockMetaData[(i & 1) * 20 + ((1 - isGoldForLocQueue[i]) + 3)]) {// so count is bigger than counter so we should validate
-                            memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
+                            cuda::memcpy_async(cta, (&mainShmem[begfirstRegShmem]),
                                 &fbArgs.origArrsPointer[mainShmem[startOfLocalWorkQ + i] * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (isGoldForLocQueue[i])], //we look for
-                                 (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
-                                );
+                                cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                                , pipeline);
 
                         }
                         else {//if we are not validating we immidiately start loading data for next loop
                             if (i + 1 < worQueueStep[0]) {
-                                memcpy_async(cta, (&localBlockMetaData[((i + 1) & 1) * 20]),
+                                cuda::memcpy_async(cta, (&localBlockMetaData[((i + 1) & 1) * 20]),
                                     (&fbArgs.metaDataArrPointer[(mainShmem[startOfLocalWorkQ + 1 + i])
                                         * fbArgs.metaData.metaDataSectionLength])
-                                    ,  (sizeof(uint32_t) * 20));
+                                    , cuda::aligned_size_t<4>(sizeof(uint32_t) * 20), pipeline);
 
 
                             }
                         }
 
-                        __syncthreads();
 
+                        pipeline.producer_commit();
 
                         //processPosteriorAndSaveResShmem
 
+                        pipeline.consumer_wait();
                         //dilatate posterior
 
 
@@ -1572,16 +1611,15 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                                 | mainShmem[begResShmem + threadIdx.x + threadIdx.y * 32];
 
                         }
-                        __syncthreads();
 
                         //now all data should be properly dilatated we save it to global memory
                         //try save target reduced via mempcy async ...
 
 
-                        //memcpy_async(cta,
+                        //cuda::memcpy_async(cta,
                         //    &getTargetReduced(fbArgs, iterationNumb)[mainShmem[startOfLocalWorkQ + i] * fbArgs.metaData.mainArrSectionLength + fbArgs.metaData.mainArrXLength * (1 - isGoldForLocQueue[i])]
                         //    , (&mainShmem[begResShmem]),
-                        //     (sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
+                        //    cuda::aligned_size_t<128>(sizeof(uint32_t) * fbArgs.metaData.mainArrXLength)
                         //    , pipeline);
 
 
@@ -1594,23 +1632,26 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
 
 
+                        pipeline.consumer_release();
 
                         __syncthreads();
 
                         //////// step 8 basically in order to complete here anyting the count need to be bigger than counter
                                                       // loading for next block if block is not to be validated it was already done earlier
+                        pipeline.producer_acquire();
                         if (localBlockMetaData[(i & 1) * 20 + ((1 - isGoldForLocQueue[i]) + 1)] //fp for gold and fn count for not gold
                             > localBlockMetaData[(i & 1) * 20 + ((1 - isGoldForLocQueue[i]) + 3)]) {// so count is bigger than counter so we should validate
                             if (i + 1 < worQueueStep[0]) {
 
 
-                                memcpy_async(cta, (&localBlockMetaData[((i + 1) & 1) * 20]),
+                                cuda::memcpy_async(cta, (&localBlockMetaData[((i + 1) & 1) * 20]),
                                     (&fbArgs.metaDataArrPointer[(mainShmem[startOfLocalWorkQ + 1 + i])
                                         * fbArgs.metaData.metaDataSectionLength])
-                                    ,  (sizeof(uint32_t) * 20));
+                                    , cuda::aligned_size_t<4>(sizeof(uint32_t) * 20), pipeline);
 
                             }
                         }
+                        pipeline.producer_commit();
 
 
 
@@ -1618,11 +1659,12 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                         __syncthreads();
 
                         //validation - so looking for newly covered voxel for opposite array so new fps or new fns
+                        pipeline.consumer_wait();
 
                         if (localBlockMetaData[(i & 1) * 20 + ((1 - isGoldForLocQueue[i]) + 1)] //fp for gold and fn count for not gold
                             > localBlockMetaData[(i & 1) * 20 + ((1 - isGoldForLocQueue[i]) + 3)]) {// so count is bigger than counter so we should validate
                                         // now we look through bits and when some is set we call it a result
-                            #pragma unroll
+#pragma unroll
                             for (uint8_t bitPos = 0; bitPos < 32; bitPos++) {
                                 //if any bit here is set it means it should be added to result list
                                 if (isBitAt(mainShmem[begResShmem + threadIdx.x + threadIdx.y * 32], bitPos)
@@ -1647,7 +1689,7 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
                                     //we add one gere jjust to distinguish it from empty result
                                     fbArgs.resultListPointerMeta[mainShmem[begSecRegShmem + threadIdx.x + threadIdx.y * 32]] = uint32_t(mainShmem[startOfLocalWorkQ + i] + (isGoldOffset * isGoldForLocQueue[i]) + 1);
                                     fbArgs.resultListPointerLocal[mainShmem[begSecRegShmem + threadIdx.x + threadIdx.y * 32]] = uint32_t((fbArgs.dbYLength * 32 * bitPos) + (threadIdx.y * 32) + (threadIdx.x));
-                                    fbArgs.resultListPointerIterNumb[mainShmem[begSecRegShmem + threadIdx.x + threadIdx.y * 32]] = uint32_t(iterationNumb[0]+1);
+                                    fbArgs.resultListPointerIterNumb[mainShmem[begSecRegShmem + threadIdx.x + threadIdx.y * 32]] = uint32_t(iterationNumb[0] + 1);
 
 
 
@@ -1658,6 +1700,7 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
                         }
                         /////////
+                        pipeline.consumer_release();
 
                         /// /// cleaning
 
@@ -1727,7 +1770,12 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
 
                 //here we are after all of the blocks planned to be processed by this block are
 
+                // just for pipeline to work
+                pipeline.consumer_wait();
 
+
+
+                pipeline.consumer_release();
 
             }
 
@@ -1922,7 +1970,7 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
     //setting global iteration number to local one
     if (blockIdx.x == 0) {
         if (threadIdx.x == 2 && threadIdx.y == 0) {
-            fbArgs.metaData.minMaxes[13] = (iterationNumb[0]+1);
+            fbArgs.metaData.minMaxes[13] = (iterationNumb[0] + 1);
         }
     }
 }
@@ -1935,9 +1983,9 @@ inline __global__ void mainPassKernel(ForBoolKernelArgs<TKKI> fbArgs) {
  * ********************************/
 
 
-/*
-get data from occupancy calculator API used to get optimal number of thread blocks and threads per thread block
-*/
+ /*
+ get data from occupancy calculator API used to get optimal number of thread blocks and threads per thread block
+ */
 template <typename T>
 inline occupancyCalcData getOccupancy() {
 
@@ -2002,7 +2050,7 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
 
     ForBoolKernelArgs<T> fbArgs = getArgsForKernel<T>(fFArgs, occData.warpsNumbForMainPass, occData.blockForMainPass, WIDTH, HEIGHT, DEPTH, stream);
 
-    getMinMaxes << <occData.blockSizeForMinMax, dim3(32, occData.warpsNumbForMinMax), 0,stream >> > (fbArgs, fbArgs.minMaxes
+    getMinMaxes << <occData.blockSizeForMinMax, dim3(32, occData.warpsNumbForMinMax), 0, stream >> > (fbArgs, fbArgs.minMaxes
         , goldArrPointer
         , segmArrPointer
         , fbArgs.metaData);
@@ -2011,7 +2059,7 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
 
     fbArgs.metaData = allocateMemoryAfterMinMaxesKernel(fbArgs, fFArgs, stream);
     fbArgs.robustnessPercent = robustnessPercent;
-    boolPrepareKernel << <occData.blockSizeFoboolPrepareKernel, dim3(32, occData.warpsNumbForboolPrepareKernel),0, stream >> > (
+    boolPrepareKernel << <occData.blockSizeFoboolPrepareKernel, dim3(32, occData.warpsNumbForboolPrepareKernel), 0, stream >> > (
         fbArgs, fbArgs.metaData, fbArgs.origArrsPointer, fbArgs.metaDataArrPointer
         , goldArrPointer
         , segmArrPointer
@@ -2022,14 +2070,13 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
 
 
 
-    firstMetaPrepareKernel << <occData.blockForFirstMetaPass, occData.theadsForFirstMetaPass, 0,stream >> > (fbArgs, fbArgs.metaData, fbArgs.minMaxes, fbArgs.workQueuePointer, fbArgs.origArrsPointer, fbArgs.metaDataArrPointer);
+    firstMetaPrepareKernel << <occData.blockForFirstMetaPass, occData.theadsForFirstMetaPass, 0, stream >> > (fbArgs, fbArgs.metaData, fbArgs.minMaxes, fbArgs.workQueuePointer, fbArgs.origArrsPointer, fbArgs.metaDataArrPointer);
 
 
 
     void* kernel_args[] = { &fbArgs };
-    cudaLaunchCooperativeKernel((void*)(mainPassKernel<int>), occData.blockForMainPass, dim3(32, occData.warpsNumbForMainPass), kernel_args, 0,stream);
+    cudaLaunchCooperativeKernel((void*)(mainPassKernel<int>), occData.blockForMainPass, dim3(32, occData.warpsNumbForMainPass), kernel_args, 0, stream);
 
-    //cudaDeviceSynchronize();
 
     //copy to the output tensor the rsult
     if (resIterNeeded) {
@@ -2041,6 +2088,16 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
         cudaMemcpyAsync(fbArgs.resultListPointerLocalTensor.data_ptr(), fbArgs.resultListPointerLocal, size, cudaMemcpyDeviceToDevice, stream);
         cudaMemcpyAsync(fbArgs.resultListPointerMetaTensor.data_ptr(), fbArgs.resultListPointerMeta, size, cudaMemcpyDeviceToDevice, stream);
     }
+
+    cudaFreeAsync(fbArgs.resultListPointerMeta, stream);
+    cudaFreeAsync(fbArgs.resultListPointerLocal, stream);
+    cudaFreeAsync(fbArgs.resultListPointerIterNumb, stream);
+    cudaFreeAsync(fbArgs.workQueuePointer, stream);
+    cudaFreeAsync(fbArgs.origArrsPointer, stream);
+    cudaFreeAsync(fbArgs.metaDataArrPointer, stream);
+    cudaFreeAsync(fbArgs.mainArrAPointer, stream);
+    cudaFreeAsync(fbArgs.mainArrBPointer, stream);
+
 
     cudaFreeAsync(fbArgs.resultListPointerMeta, stream);
     cudaFreeAsync(fbArgs.resultListPointerLocal, stream);
@@ -2078,6 +2135,8 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
         AT_ERROR(#NAME, " not implemented for '", toString(_st), "'");          \
     }                                                                           \
   }()
+
+
 
 
 
@@ -2171,7 +2230,7 @@ int getHausdorffDistance_CUDA(at::Tensor goldStandard,
     int res = 0;
 
     AT_DISPATCH_ALL_TYPESWithBool(goldStandard.type(), "getHausdorffDistance_CUDA", ([&] {
-        res = getHausdorffDistance_CUDA_Generic<scalar_t>(goldStandard, algoOutput, WIDTH, HEIGHT, DEPTH, robustnessPercent, false, numberToLookFor,false);
+        res = getHausdorffDistance_CUDA_Generic<scalar_t>(goldStandard, algoOutput, WIDTH, HEIGHT, DEPTH, robustnessPercent, false, numberToLookFor, false);
 
         }));
     return res;
@@ -2202,50 +2261,50 @@ at::Tensor getHausdorffDistance_CUDA_FullResList(at::Tensor goldStandard,
 
 
 
-/*
-on the basis of result lists return the location of each voxel that contributed to Hausdorff distance and how much it contributed
-fbArgs - struct with needed data
-resGold - tensor where output will be stored from gold mask dilatations
-resSegm - tensor where output will be stored from algorithm output dilatations
-len - length of result list we will iterate over
-*/
+ /*
+ on the basis of result lists return the location of each voxel that contributed to Hausdorff distance and how much it contributed
+ fbArgs - struct with needed data
+ resGold - tensor where output will be stored from gold mask dilatations
+ resSegm - tensor where output will be stored from algorithm output dilatations
+ len - length of result list we will iterate over
+ */
 template <typename T>
 __global__ void get3Dres_local_kernel(ForBoolKernelArgs<T> fbArgs, float* resGold, float* resSegm, int len) {
 
     //simple grid stride loop
-    for (uint32_t i= blockIdx.x * blockDim.x + threadIdx.x ; i < len; i+= blockDim.x*gridDim.x) {        
-            if (fbArgs.resultListPointerLocal[i] > 0 || fbArgs.resultListPointerMeta[i] > 0) {
-                uint32_t linIdexMeta = fbArgs.resultListPointerMeta[i] - (isGoldOffset * (fbArgs.resultListPointerMeta[i] >= isGoldOffset)) - 1;
-                uint32_t xMeta = linIdexMeta % fbArgs.metaData.metaXLength;
-                uint32_t zMeta = uint32_t(floor((float)(linIdexMeta / (fbArgs.metaData.metaXLength * fbArgs.metaData.MetaYLength))));
-                uint32_t yMeta = uint32_t(floor((float)((linIdexMeta - ((zMeta * fbArgs.metaData.metaXLength * fbArgs.metaData.MetaYLength) + xMeta)) / fbArgs.metaData.metaXLength)));
+    for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < len; i += blockDim.x * gridDim.x) {
+        if (fbArgs.resultListPointerLocal[i] > 0 || fbArgs.resultListPointerMeta[i] > 0) {
+            uint32_t linIdexMeta = fbArgs.resultListPointerMeta[i] - (isGoldOffset * (fbArgs.resultListPointerMeta[i] >= isGoldOffset)) - 1;
+            uint32_t xMeta = linIdexMeta % fbArgs.metaData.metaXLength;
+            uint32_t zMeta = uint32_t(floor((float)(linIdexMeta / (fbArgs.metaData.metaXLength * fbArgs.metaData.MetaYLength))));
+            uint32_t yMeta = uint32_t(floor((float)((linIdexMeta - ((zMeta * fbArgs.metaData.metaXLength * fbArgs.metaData.MetaYLength) + xMeta)) / fbArgs.metaData.metaXLength)));
 
-                auto linLocal = fbArgs.resultListPointerLocal[i];
-                auto xLoc = linLocal % fbArgs.dbXLength;
-                auto zLoc = uint32_t(floor((float)(linLocal / (32 * fbArgs.dbYLength))));
-                auto yLoc = uint32_t(floor((float)((linLocal - ((zLoc * 32 * fbArgs.dbYLength) + xLoc)) / 32)));
+            auto linLocal = fbArgs.resultListPointerLocal[i];
+            auto xLoc = linLocal % fbArgs.dbXLength;
+            auto zLoc = uint32_t(floor((float)(linLocal / (32 * fbArgs.dbYLength))));
+            auto yLoc = uint32_t(floor((float)((linLocal - ((zLoc * 32 * fbArgs.dbYLength) + xLoc)) / 32)));
 
-                // setting appropriate  spot in the result to a given value
-                if (fbArgs.resultListPointerMeta[i] >= isGoldOffset) {
-                    //resGold[1] = 1.0;
-                    resGold[(xMeta * 32 + xLoc) + (yMeta * fbArgs.dbYLength + yLoc) * fbArgs.Nx + (zMeta * 32 + zLoc) * fbArgs.Nx * fbArgs.Ny] = fbArgs.resultListPointerIterNumb[i]; 
-                }
-                else {
-                    resSegm[(xMeta * 32 + xLoc) + (yMeta * fbArgs.dbYLength + yLoc) * fbArgs.Nx + (zMeta * 32 + zLoc) * fbArgs.Nx * fbArgs.Ny] = fbArgs.resultListPointerIterNumb[i]; 
-                }
-                //uint32_t x = xMeta * 32 + xLoc;
-                //uint32_t y = yMeta * fbArgs.dbYLength + yLoc;
-                //uint32_t z = zMeta * 32 + zLoc;
-                //uint32_t iterNumb = fbArgs.resultListPointerIterNumb[i];
-
-                //printf("resullt linIdexMeta %d x %d y %d z %d  xMeta %d yMeta %d zMeta %d xLoc %d yLoc %d zLoc %d linLocal %d  iterNumb %d \n"
-                //    , linIdexMeta
-                //    , x, y, z
-                //    , xMeta, yMeta, zMeta
-                //    , xLoc, yLoc, zLoc
-                //    , linLocal
-                //    , iterNumb
+            // setting appropriate  spot in the result to a given value
+            if (fbArgs.resultListPointerMeta[i] >= isGoldOffset) {
+                //resGold[1] = 1.0;
+                resGold[(xMeta * 32 + xLoc) + (yMeta * fbArgs.dbYLength + yLoc) * fbArgs.Nx + (zMeta * 32 + zLoc) * fbArgs.Nx * fbArgs.Ny] = fbArgs.resultListPointerIterNumb[i];
             }
+            else {
+                resSegm[(xMeta * 32 + xLoc) + (yMeta * fbArgs.dbYLength + yLoc) * fbArgs.Nx + (zMeta * 32 + zLoc) * fbArgs.Nx * fbArgs.Ny] = fbArgs.resultListPointerIterNumb[i];
+            }
+            //uint32_t x = xMeta * 32 + xLoc;
+            //uint32_t y = yMeta * fbArgs.dbYLength + yLoc;
+            //uint32_t z = zMeta * 32 + zLoc;
+            //uint32_t iterNumb = fbArgs.resultListPointerIterNumb[i];
+
+            //printf("resullt linIdexMeta %d x %d y %d z %d  xMeta %d yMeta %d zMeta %d xLoc %d yLoc %d zLoc %d linLocal %d  iterNumb %d \n"
+            //    , linIdexMeta
+            //    , x, y, z
+            //    , xMeta, yMeta, zMeta
+            //    , xLoc, yLoc, zLoc
+            //    , linLocal
+            //    , iterNumb
+        }
     }
 }
 
@@ -2257,9 +2316,9 @@ voxelsNumber - number of voxel in resGold = resSegm
 template <typename T>
 __global__ void elementWiseAverage(ForBoolKernelArgs<T> fbArgs, float* resGold, float* resSegm, int voxelsNumber) {
     for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < voxelsNumber; i += blockDim.x * gridDim.x) {
-        resGold[i] = ( resGold[i] + resSegm[i]) / 2;
+        resGold[i] = (resGold[i] + resSegm[i]) / 2;
     }
-    }
+}
 
 
 
@@ -2288,7 +2347,7 @@ at::Tensor getHausdorffDistance_CUDA_3Dres_local(at::Tensor goldStandard,
 
     occupancyCalcData occData = getOccupancy<T>();
 
-    ForBoolKernelArgs<T> fbArgs = executeHausdoff(forFullBoolPrepArgs, WIDTH, HEIGHT, DEPTH, occData, stream1, false, robustnessPercent, true,true);
+    ForBoolKernelArgs<T> fbArgs = executeHausdoff(forFullBoolPrepArgs, WIDTH, HEIGHT, DEPTH, occData, stream1, false, robustnessPercent, true, true);
 
 
     auto options =
@@ -2301,10 +2360,10 @@ at::Tensor getHausdorffDistance_CUDA_3Dres_local(at::Tensor goldStandard,
     at::Tensor resSegm = torch::zeros({ WIDTH, HEIGHT, DEPTH }, options);
 
     int len = fbArgs.resultListPointerIterNumbTensor.sizes()[0];
-    
+
     //occupancy calculator
-    int minGridSize=0;
-    int blockSize=0;
+    int minGridSize = 0;
+    int blockSize = 0;
     cudaOccupancyMaxPotentialBlockSize(
         &minGridSize,
         &blockSize,
@@ -2313,7 +2372,7 @@ at::Tensor getHausdorffDistance_CUDA_3Dres_local(at::Tensor goldStandard,
 
 
     //simple one dimensional kernel
-    get3Dres_local_kernel << <minGridSize, blockSize, 0, stream1 >> > (fbArgs, (float*)resGold.data_ptr() , (float*)resSegm.data_ptr()  , len);
+    get3Dres_local_kernel << <minGridSize, blockSize, 0, stream1 >> > (fbArgs, (float*)resGold.data_ptr(), (float*)resSegm.data_ptr(), len);
 
 
     cudaOccupancyMaxPotentialBlockSize(
@@ -2323,7 +2382,7 @@ at::Tensor getHausdorffDistance_CUDA_3Dres_local(at::Tensor goldStandard,
         0);
 
     //get element wise average
-    elementWiseAverage<<<minGridSize, blockSize, 0, stream1 >>>(fbArgs, (float*)resGold.data_ptr(), (float*)resSegm.data_ptr(), WIDTH* HEIGHT* DEPTH);
+    elementWiseAverage << <minGridSize, blockSize, 0, stream1 >> > (fbArgs, (float*)resGold.data_ptr(), (float*)resSegm.data_ptr(), WIDTH * HEIGHT * DEPTH);
 
 
     cudaFreeAsync(fbArgs.minMaxes, stream1);
@@ -2351,362 +2410,3 @@ at::Tensor getHausdorffDistance_CUDA_3Dres(at::Tensor goldStandard,
     return res;
 
 }
-
-
-
-//
-//
-//
-//
-//
-///*************************************************************
-//*Oliviera Algorithm
-//*************************************************************************************/
-//
-//
-//typedef unsigned char uchar;
-//typedef unsigned int uint;
-//#pragma once
-//class Volume {
-//
-//private:
-//    bool* volume;
-//    int width, height, depth;
-//    int getLinearIndex(int x, int y, int z);
-//public:
-//    bool getVoxelValue(int x, int y, int z);
-//    bool getPixelValue(int x, int y);
-//    uint getWidth();
-//    uint getHeight();
-//    uint getDepth();
-//    bool* getVolume();
-//    void setVoxelValue(bool value, int x, int y, int z);
-//    void setPixelValue(bool value, int x, int y);
-//    Volume(int width, int height, int depth);
-//    Volume(int width, int height);
-//    void dispose();
-//
-//};
-//
-//
-//
-//
-//#define CUDA_DEVICE_INDEX 0 //setting the index of your CUDA device
-//
-//#define IS_3D 1 //setting this to 0 would grant a very slightly improvement on the performance if working with images only
-//#define CHEBYSHEV 0 //if not set to 1, then this algorithm would use an Euclidean-like metric, it is just an approximation. 
-////It can be changed according to the structuring element
-//#pragma once
-//class HausdorffDistance {
-//
-//private:
-//    void print(cudaError_t error, char* msg);
-//
-//public:
-//    int computeDistance(Volume* img1, Volume* img2, bool* d_img1, bool* d_img2);
-//
-//};
-//
-//
-//
-//#pragma once
-//inline Volume::Volume(const int width, const int height) {
-//    this->width = width; this->height = height; this->depth = 1;
-//    volume = (bool*)calloc(width * height * depth, sizeof(bool));
-//}
-//#pragma once
-//inline int Volume::getLinearIndex(const int x, const int y, const int z) {
-//    const int a = 1, b = width, c = (width) * (height);
-//    return a * x + b * y + c * z;
-//}
-//
-//inline uint Volume::getWidth() { return this->width; }
-//inline uint Volume::getHeight() { return this->height; }
-//inline uint Volume::getDepth() { return this->depth; }
-//inline bool* Volume::getVolume() { return this->volume; }
-//inline bool Volume::getPixelValue(int x, int y) { return this->volume[getLinearIndex(x, y, 0)]; }
-//#pragma once
-//inline bool Volume::getVoxelValue(int x, int y, int z) {
-//    return volume[getLinearIndex(x, y, z)];
-//}
-//#pragma once
-//inline void Volume::setPixelValue(bool value, const int x, const int y) {
-//    volume[getLinearIndex(x, y, 0)] = value;
-//}
-//#pragma once
-//inline void Volume::setVoxelValue(bool value, const int x, const int y, const int z) {
-//    volume[getLinearIndex(x, y, z)] = value;
-//}
-//#pragma once
-//inline void Volume::dispose() {
-//    free(volume);
-//}
-//
-//typedef unsigned char uchar;
-//typedef unsigned int uint;
-//
-//#pragma once
-//__device__ int finished; //global variable that contains a boolean which indicates when to stop the kernel processing
-//#pragma once
-//__constant__ __device__ int WIDTH, HEIGHT, DEPTH; //constant variables that contain the size of the volume
-//
-//
-//#pragma once
-//__global__ void dilate(const bool* IMG1, const bool* IMG2, const bool* img1Read, const bool* img2Read,
-//    bool* img1Write, bool* img2Write) {
-//
-//    const int id = blockDim.x * blockIdx.x + threadIdx.x;
-//#if !IS_3D
-//    const int x = id % WIDTH, y = id / WIDTH;
-//#else
-//    const int x = id % WIDTH, y = (id / WIDTH) % HEIGHT, z = (id / WIDTH) / HEIGHT;
-//#endif
-//
-//    if (id < WIDTH * HEIGHT * DEPTH) {
-//
-//
-//        if (img1Read[id]) {
-//            if (x + 1 < WIDTH) img1Write[id + 1] = true;
-//            if (x - 1 >= 0) img1Write[id - 1] = true;
-//            if (y + 1 < HEIGHT) img1Write[id + WIDTH] = true;
-//            if (y - 1 >= 0) img1Write[id - WIDTH] = true;
-//#if IS_3D //if working with 3d volumes, then the 3D part
-//            if (z + 1 < DEPTH) img1Write[id + WIDTH * HEIGHT] = true;
-//            if (z - 1 >= 0) img1Write[id - WIDTH * HEIGHT] = true;
-//#endif
-//
-//#if CHEBYSHEV
-//            //diagonals
-//            if (x + 1 < WIDTH && y - 1 >= 0) img1Write[id - WIDTH + 1] = true;
-//            if (x - 1 >= 0 && y - 1 >= 0) img1Write[id - WIDTH - 1] = true;
-//            if (x + 1 < WIDTH && y + 1 < HEIGHT) img1Write[id + WIDTH + 1] = true;
-//            if (x - 1 >= 0 && y + 1 < HEIGHT) img1Write[id + WIDTH - 1] = true;
-//#if IS_3D //if working with 3d volumes, then the 3D part
-//            if (z + 1 < DEPTH && x + 1 < WIDTH && y - 1 >= 0) img1Write[id - WIDTH + 1 + WIDTH * HEIGHT] = true;
-//            if (z + 1 < DEPTH && x - 1 >= 0 && y - 1 >= 0) img1Write[id - WIDTH - 1 + WIDTH * HEIGHT] = true;
-//            if (z + 1 < DEPTH && x + 1 < WIDTH && y + 1 < HEIGHT) img1Write[id + WIDTH + 1 + WIDTH * HEIGHT] = true;
-//            if (z + 1 < DEPTH && x - 1 >= 0 && y + 1 < HEIGHT) img1Write[id + WIDTH - 1 + WIDTH * HEIGHT] = true;
-//            if (z - 1 >= 0 && x + 1 < WIDTH && y - 1 >= 0) img1Write[id - WIDTH + 1 - WIDTH * HEIGHT] = true;
-//            if (z - 1 >= 0 && x - 1 >= 0 && y - 1 >= 0) img1Write[id - WIDTH - 1 - WIDTH * HEIGHT] = true;
-//            if (z - 1 >= 0 && x + 1 < WIDTH && y + 1 < HEIGHT) img1Write[id + WIDTH + 1 - WIDTH * HEIGHT] = true;
-//            if (z - 1 >= 0 && x - 1 >= 0 && y + 1 < HEIGHT) img1Write[id + WIDTH - 1 - WIDTH * HEIGHT] = true;
-//#endif
-//#endif
-//        }
-//
-//
-//        if (img2Read[id]) {
-//            if (x + 1 < WIDTH) img2Write[id + 1] = true;
-//            if (x - 1 >= 0) img2Write[id - 1] = true;
-//            if (y + 1 < HEIGHT) img2Write[id + WIDTH] = true;
-//            if (y - 1 >= 0) img2Write[id - WIDTH] = true;
-//#if IS_3D //if working with 3d volumes, then the 3D part
-//            if (z + 1 < DEPTH) img2Write[id + WIDTH * HEIGHT] = true;
-//            if (z - 1 >= 0) img2Write[id - WIDTH * HEIGHT] = true;
-//#endif
-//
-//#if CHEBYSHEV
-//            //diagonals
-//            if (x + 1 < WIDTH && y - 1 >= 0) img2Write[id - WIDTH + 1] = true;
-//            if (x - 1 >= 0 && y - 1 >= 0) img2Write[id - WIDTH - 1] = true;
-//            if (x + 1 < WIDTH && y + 1 < HEIGHT) img2Write[id + WIDTH + 1] = true;
-//            if (x - 1 >= 0 && y + 1 < HEIGHT) img2Write[id + WIDTH - 1] = true;
-//#if IS_3D //if working with 3d volumes, then the 3D part
-//            if (z + 1 < DEPTH && x + 1 < WIDTH && y - 1 >= 0) img2Write[id - WIDTH + 1 + WIDTH * HEIGHT] = true;
-//            if (z + 1 < DEPTH && x - 1 >= 0 && y - 1 >= 0) img2Write[id - WIDTH - 1 + WIDTH * HEIGHT] = true;
-//            if (z + 1 < DEPTH && x + 1 < WIDTH && y + 1 < HEIGHT) img2Write[id + WIDTH + 1 + WIDTH * HEIGHT] = true;
-//            if (z + 1 < DEPTH && x - 1 >= 0 && y + 1 < HEIGHT) img2Write[id + WIDTH - 1 + WIDTH * HEIGHT] = true;
-//            if (z - 1 >= 0 && x + 1 < WIDTH && y - 1 >= 0) img2Write[id - WIDTH + 1 - WIDTH * HEIGHT] = true;
-//            if (z - 1 >= 0 && x - 1 >= 0 && y - 1 >= 0) img2Write[id - WIDTH - 1 - WIDTH * HEIGHT] = true;
-//            if (z - 1 >= 0 && x + 1 < WIDTH && y + 1 < HEIGHT) img2Write[id + WIDTH + 1 - WIDTH * HEIGHT] = true;
-//            if (z - 1 >= 0 && x - 1 >= 0 && y + 1 < HEIGHT) img2Write[id + WIDTH - 1 - WIDTH * HEIGHT] = true;
-//#endif
-//#endif
-//        }
-//
-//
-//        //this is an atomic and computed to the finished global variable, if image 1 contains all of image 2 and image 2 contains all pixels of
-//        //image 1 then finished is true
-//        atomicAnd(&finished, (img2Read[id] || !IMG1[id]) && (img1Read[id] || !IMG2[id]));
-//    }
-//}
-//
-//#pragma once
-//int HausdorffDistance::computeDistance(Volume* img1, Volume* img2, bool* d_img1, bool* d_img2) {
-//
-//    const int height = (*img1).getHeight(), width = (*img1).getWidth(), depth = (*img1).getDepth();
-//
-//    size_t size = width * height * depth * sizeof(bool);
-//
-//    //getting details of your CUDA device
-//    cudaDeviceProp props;
-//    cudaGetDeviceProperties(&props, CUDA_DEVICE_INDEX); //device index = 0, you can change it if you have more CUDA devices
-//    const int threadsPerBlock = props.maxThreadsPerBlock / 2;
-//    const int blocksPerGrid = (height * width * depth + threadsPerBlock - 1) / threadsPerBlock;
-//
-//
-//    //copying the dimensions to the GPU
-//    cudaMemcpyToSymbolAsync(WIDTH, &width, sizeof(width), 0);
-//    cudaMemcpyToSymbolAsync(HEIGHT, &height, sizeof(height), 0);
-//    cudaMemcpyToSymbolAsync(DEPTH, &depth, sizeof(depth), 0);
-//
-//
-//    //allocating the input images on the GPU
-//
-//
-//
-//    //allocating the images that will be the processing ones
-//    bool* d_img1Write, * d_img1Read, * d_img2Write, * d_img2Read;
-//    cudaMalloc(&d_img1Write, size); cudaMalloc(&d_img1Read, size);
-//    cudaMalloc(&d_img2Write, size); cudaMalloc(&d_img2Read, size);
-//
-//
-//    //cloning the input images to these two image versions (write and read)
-//    cudaMemcpyAsync(d_img1Read, d_img1, size, cudaMemcpyDeviceToDevice);
-//    cudaMemcpyAsync(d_img2Read, d_img2, size, cudaMemcpyDeviceToDevice);
-//    cudaMemcpyAsync(d_img1Write, d_img1, size, cudaMemcpyDeviceToDevice);
-//    cudaMemcpyAsync(d_img2Write, d_img2, size, cudaMemcpyDeviceToDevice);
-//
-//
-//
-//    //required variables to compute the distance
-//    int h_finished = false, t = true;
-//    int distance = -1;
-//
-//    //where the magic happens
-//    while (!h_finished) {
-//        //reset the bool variable that verifies if the processing ended
-//        cudaMemcpyToSymbol(finished, &t, sizeof(h_finished));
-//
-//
-//        //lauching the verify kernel, which verifies if the processing finished
-//        dilate << < blocksPerGrid, threadsPerBlock >> > (d_img1, d_img2, d_img1Read, d_img2Read, d_img1Write, d_img2Write);
-//
-//        //cudaDeviceSynchronize();
-//
-//        //updating the imgRead (cloning imgWrite to imgRead)
-//        cudaMemcpy(d_img1Read, d_img1Write, size, cudaMemcpyDeviceToDevice);
-//        cudaMemcpy(d_img2Read, d_img2Write, size, cudaMemcpyDeviceToDevice);
-//
-//        //copying the result back to host memory
-//        cudaMemcpyFromSymbol(&h_finished, finished, sizeof(h_finished));
-//
-//
-//        //incrementing the distance at each iteration
-//        distance++;
-//    }
-//
-//
-//    //freeing memory
-//    cudaFree(d_img1); cudaFree(d_img2);
-//    cudaFree(d_img1Write); cudaFree(d_img1Read);
-//    cudaFree(d_img2Write); cudaFree(d_img2Read);
-//
-//    //resetting device
-//   // cudaDeviceReset();
-//
-//    //print(cudaGetLastError(), "processing CUDA. Something may be wrong with your CUDA device.");
-//
-//    return distance;
-//
-//}
-//#pragma once
-//inline void HausdorffDistance::print(cudaError_t error, char* msg) {
-//    if (error != cudaSuccess)
-//    {
-//        printf("Error on %s ", msg);
-//        fprintf(stderr, "Error code: %s!\n", cudaGetErrorString(error));
-//        exit(EXIT_FAILURE);
-//    }
-//}
-//
-//
-//
-///*
-//benchmark for original code from  https://github.com/Oyatsumi/HausdorffDistanceComparison
-//*/
-//std::tuple<int, double> benchmarkOlivieraCUDA(torch::Tensor goldStandardA,
-//    torch::Tensor algoOutputA, int WIDTH, int HEIGHT
-//    , int DEPTH) {
-//
-//    //just originally it started for cpu so ...
-//
-//    int lenn = WIDTH * HEIGHT * DEPTH;
-//    size_t sizee = sizeof(bool) * lenn;
-//
-//
-//
-//    bool* goldStandard = (bool*)calloc(lenn, sizeof(bool));
-//    bool* algoOutput = (bool*)calloc(lenn, sizeof(bool));
-//
-//    cudaMemcpy(goldStandard, goldStandardA.data_ptr(), sizee, cudaMemcpyDeviceToHost);
-//    cudaMemcpy(algoOutput, algoOutputA.data_ptr(), sizee, cudaMemcpyDeviceToHost);
-//
-//
-//    //auto goldStandardA.data_ptr()
-//
-//
-//    //bool* goldStandard = (bool*)goldStandardA.to(torch::kCPU).data_ptr();
-//    //bool* algoOutput = (bool*)algoOutputA.to(torch::kCPU).data_ptr();
-//
-//
-//
-//    Volume img1 = Volume(WIDTH, HEIGHT, DEPTH), img2 = Volume(WIDTH, HEIGHT, DEPTH);
-//
-//    for (int x = 0; x < WIDTH; x++) {
-//        for (int y = 0; y < HEIGHT; y++) {
-//            for (int z = 0; z < DEPTH; z++) {
-//                img1.setVoxelValue(algoOutput[x + y * WIDTH + z * WIDTH * HEIGHT], x, y, z);
-//                img2.setVoxelValue(goldStandard[x + y * WIDTH + z * WIDTH * HEIGHT], x, y, z);
-//            }
-//        }
-//    }
-//
-//    size_t size = WIDTH * HEIGHT * DEPTH * sizeof(bool);
-//
-//
-//    bool* d_img1, * d_img2;
-//    cudaMalloc(&d_img1, size);
-//    cudaMalloc(&d_img2, size);
-//
-//
-//    //copying the data to the allocated memory on the GPU
-//    cudaMemcpyAsync(d_img1, (img1).getVolume(), size, cudaMemcpyHostToDevice);
-//    cudaMemcpyAsync(d_img2, (img2).getVolume(), size, cudaMemcpyHostToDevice);
-//
-//
-//    auto begin = std::chrono::high_resolution_clock::now();
-//    HausdorffDistance* hd = new HausdorffDistance();
-//
-//    cudaDeviceSynchronize();
-//
-//    int dist = (*hd).computeDistance(&img1, &img2, d_img1, d_img2);
-//    cudaDeviceSynchronize();
-//
-//
-//    auto end = std::chrono::high_resolution_clock::now();
-//
-//
-//
-//    // std::cout << "Total elapsed time: ";
-//    double time = (double)(std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / (double)1000000000);
-//    //std::cout << time << "s" << std::endl;
-//
-//   // printf("HD: %d \n", dist);
-//
-//
-//
-//    //freeing memory
-//    img1.dispose(); img2.dispose();
-//    free(goldStandard);
-//    free(algoOutput);
-//    //Datasize: 216530944
-//   //Datasize : 216530944
-//    //Total elapsed time : 2.62191s
-//    //HD : 234
-//    return { dist, time };
-//}
-//
-//
-//
-//
