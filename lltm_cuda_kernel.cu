@@ -2029,6 +2029,7 @@ ForBoolKernelArgs<T> executeHausdoff(ForFullBoolPrepArgs<T>& fFArgs, const int W
     void* kernel_args[] = { &fbArgs };
     cudaLaunchCooperativeKernel((void*)(mainPassKernel<int>), occData.blockForMainPass, dim3(32, occData.warpsNumbForMainPass), kernel_args, 0,stream);
 
+    //cudaDeviceSynchronize();
 
     //copy to the output tensor the rsult
     if (resIterNeeded) {

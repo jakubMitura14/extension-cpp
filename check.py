@@ -19,6 +19,8 @@ WIDTH = 336;
 HEIGHT = 250;
 DEPTH = 371;
 
+
+
 #print(f['algoOuttD'][2])
 #print(np.sum(algoOuttD))
 #print(np.sum(algoOuttD))
@@ -33,18 +35,53 @@ DEPTH = 371;
 def mymedianHd(a, b,  WIDTH,  HEIGHT,  DEPTH):
     return np.savetxt('resForHistogram.csv' ,lltm_cuda.getHausdorffDistance_FullResList(a, b,  WIDTH,  HEIGHT,  DEPTH,1.0, torch.ones(1, dtype =bool) ).cpu().detach().numpy(), delimiter=",")
         
+def myRobustHd(a, b,  WIDTH,  HEIGHT,  DEPTH):
+    return lltm_cuda.getHausdorffDistance(a[:], b[:],  WIDTH,  HEIGHT,  DEPTH,0.90, torch.ones(1, dtype =bool) )
 
-#print(mymedianHd(algoOuttD,golddD,  WIDTH,  HEIGHT,  DEPTH))
+#print(myRobustHd(algoOuttD, golddD,  WIDTH,  HEIGHT,  DEPTH))
+
+#print("aaa")
+
+print(np.mean(lltm_cuda.getHausdorffDistance_FullResList(algoOuttD, golddD,  WIDTH,  HEIGHT,  DEPTH,1.0, torch.ones(1, dtype =bool) ).cpu().detach().numpy()))
+print(np.mean(lltm_cuda.getHausdorffDistance_FullResList(algoOuttD, golddD,  WIDTH,  HEIGHT,  DEPTH,1.0, torch.ones(1, dtype =bool) ).cpu().detach().numpy()))
+print(np.mean(lltm_cuda.getHausdorffDistance_FullResList(algoOuttD, golddD,  WIDTH,  HEIGHT,  DEPTH,1.0, torch.ones(1, dtype =bool) ).cpu().detach().numpy()))
+print(np.mean(lltm_cuda.getHausdorffDistance_FullResList(algoOuttD, golddD,  WIDTH,  HEIGHT,  DEPTH,1.0, torch.ones(1, dtype =bool) ).cpu().detach().numpy()))
 
 
-def my3dResult(a, b,  WIDTH,  HEIGHT,  DEPTH):
-    arr= lltm_cuda.getHausdorffDistance_3Dres(a, b,  WIDTH,  HEIGHT,  DEPTH,1.0, torch.ones(1, dtype =bool) ).cpu().detach().numpy()
-    #print(np.sum(arr))
-    dset = f.create_dataset("3dResulttoLookB", data=arr)
+
+#print("ccc")
+
+#def my3dResult(a, b,  WIDTH,  HEIGHT,  DEPTH):
+#    arr= lltm_cuda.getHausdorffDistance_3Dres(a, b,  WIDTH,  HEIGHT,  DEPTH,1.0, torch.ones(1, dtype =bool) ).cpu().detach().numpy()
+#    print(np.sum(arr))
+#    #dset = f.create_dataset("3dResulttoLookB", data=arr)
 
 
-my3dResult(algoOuttD,golddD,  WIDTH,  HEIGHT,  DEPTH)        
-f.close()
+##my3dResult(algoOuttD,golddD,  WIDTH,  HEIGHT,  DEPTH)        
+#a=torch.from_numpy(np.zeros((70,70,70)).astype(bool)).to(cuda0)
+#b=torch.from_numpy(np.zeros((70,70,70)).astype(bool)).to(cuda0)
+
+#a[1,0,0]=True
+#b[11,0,0]=True
+
+##a= a.to(cuda0)
+##b= b.to(cuda0)
+##my3dResult(a,b,  70,  70,  70)        
+#f.close()
+#arr= lltm_cuda.getHausdorffDistance_3Dres(a, b,  70,70,70 ,1.0, torch.ones(1, dtype =bool) ).cpu().detach().numpy()
+
+#print(arr[1,0,0])
+#print(arr[11,0,0])
+#print(np.sum(arr))
+
+
+
+
+
+
+
+
+
 
 
 # from __future__ import division
