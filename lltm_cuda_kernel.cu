@@ -2183,6 +2183,8 @@ int getHausdorffDistance_CUDA_Generic(at::Tensor goldStandard,
 }
 
 
+
+
 template <typename T>
 at::Tensor getHausdorffDistance_CUDA_FullResList_local(at::Tensor goldStandard,
     at::Tensor algoOutput
@@ -2314,9 +2316,9 @@ takes two 3D tensord and computes the element wise avarage from two entries and 
 voxelsNumber - number of voxel in resGold = resSegm
 */
 template <typename T>
-__global__ void elementWiseAverage(ForBoolKernelArgs<T> fbArgs, float* resGold, float* resSegm, int voxelsNumber) {
+__global__ void elementWiseAverage(ForBoolKernelArgs<T> fbArgs, float* resGold, float* resSegm, int voxelsNumber,int maxEl) {
     for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < voxelsNumber; i += blockDim.x * gridDim.x) {
-        resGold[i] = (resGold[i] + resSegm[i]) / 2;
+        resGold[i] = (resGold[i] + resSegm[i]) / 2*maxEl;
     }
 }
 
@@ -2381,8 +2383,10 @@ at::Tensor getHausdorffDistance_CUDA_3Dres_local(at::Tensor goldStandard,
         (void*)elementWiseAverage<T>,
         0);
 
+    int maxEl = forFullBoolPrepArgs.metaData.minMaxes[13];
+
     //get element wise average
-    elementWiseAverage << <minGridSize, blockSize, 0, stream1 >> > (fbArgs, (float*)resGold.data_ptr(), (float*)resSegm.data_ptr(), WIDTH * HEIGHT * DEPTH);
+    elementWiseAverage << <minGridSize, blockSize, 0, stream1 >> > (fbArgs, (float*)resGold.data_ptr(), (float*)resSegm.data_ptr(), WIDTH * HEIGHT * DEPTH, maxEl);
 
 
     cudaFreeAsync(fbArgs.minMaxes, stream1);

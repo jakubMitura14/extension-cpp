@@ -56,48 +56,51 @@ def my3dResult(a, b,  WIDTH,  HEIGHT,  DEPTH):
     print(np.sum(arr))
     dset = f.create_dataset("3dResulttoLookD", data=arr)
 
+arr= lltm_cuda.getHausdorffDistance_3Dres(algoOuttD,golddD,  DEPTH,  HEIGHT,  WIDTH,1.0, torch.ones(1, dtype =bool) ).cpu().detach().numpy()
+print(np.sum(arr))
+
 
 #my3dResult(algoOuttD,golddD,  WIDTH,  HEIGHT,  DEPTH)        
-my3dResult(algoOuttD,golddD,  DEPTH ,  HEIGHT,WIDTH  )        
+#my3dResult(algoOuttD,golddD,  DEPTH ,  HEIGHT,WIDTH  )        
 
-a=torch.from_numpy(np.zeros((70,80,90)).astype(bool)).to(cuda0)
-b=torch.from_numpy(np.zeros((70,80,90)).astype(bool)).to(cuda0)
+#a=torch.from_numpy(np.zeros((70,80,90)).astype(bool)).to(cuda0)
+#b=torch.from_numpy(np.zeros((70,80,90)).astype(bool)).to(cuda0)
 
-a[1,0,0]=True
-b[11,0,0]=True
+#a[1,0,0]=True
+#b[11,0,0]=True
 
-##a= a.to(cuda0)
-##b= b.to(cuda0)
-##my3dResult(a,b,  70,  70,  70)        
-#f.close()
-arr= lltm_cuda.getHausdorffDistance_3Dres(a, b,  90,80,70 ,1.0, torch.ones(1, dtype =bool) ).cpu().detach().numpy()
+###a= a.to(cuda0)
+###b= b.to(cuda0)
+###my3dResult(a,b,  70,  70,  70)        
+##f.close()
+#arr= lltm_cuda.getHausdorffDistance_3Dres(a, b,  90,80,70 ,1.0, torch.ones(1, dtype =bool) ).cpu().detach().numpy()
 
-print(arr[1,0,0])
-print(arr[11,0,0])
-print(np.sum(arr))
-print("sss ")
+#print(arr[1,0,0])
+#print(arr[11,0,0])
+#print(np.sum(arr))
+#print("sss ")
 
-a=torch.from_numpy(np.zeros((70,80,90)).astype(bool)).to(cuda0)
-b=torch.from_numpy(np.zeros((70,80,90)).astype(bool)).to(cuda0)
-a[0,1,0]=True
-b[0,11,0]=True
-arr= lltm_cuda.getHausdorffDistance_3Dres(a, b,  90,80,70 ,1.0, torch.ones(1, dtype =bool) ).cpu().detach().numpy()
-print(arr[0,1,0])
-print(arr[0,11,0])
-print(np.sum(arr))
+#a=torch.from_numpy(np.zeros((70,80,90)).astype(bool)).to(cuda0)
+#b=torch.from_numpy(np.zeros((70,80,90)).astype(bool)).to(cuda0)
+#a[0,1,0]=True
+#b[0,11,0]=True
+#arr= lltm_cuda.getHausdorffDistance_3Dres(a, b,  90,80,70 ,1.0, torch.ones(1, dtype =bool) ).cpu().detach().numpy()
+#print(arr[0,1,0])
+#print(arr[0,11,0])
+#print(np.sum(arr))
 
-print("sss ")
-a=torch.from_numpy(np.zeros((70,80,90)).astype(bool)).to(cuda0)
-b=torch.from_numpy(np.zeros((70,80,90)).astype(bool)).to(cuda0)
-a[0,0,1]=True
-b[0,0,11]=True
-arr= lltm_cuda.getHausdorffDistance_3Dres(a, b, 90,80,70 ,1.0, torch.ones(1, dtype =bool) ).cpu().detach().numpy()
-print(arr[0,0,1])
-print(arr[0,0,11])
-print(np.sum(arr))
+#print("sss ")
+#a=torch.from_numpy(np.zeros((70,80,90)).astype(bool)).to(cuda0)
+#b=torch.from_numpy(np.zeros((70,80,90)).astype(bool)).to(cuda0)
+#a[0,0,1]=True
+#b[0,0,11]=True
+#arr= lltm_cuda.getHausdorffDistance_3Dres(a, b, 90,80,70 ,1.0, torch.ones(1, dtype =bool) ).cpu().detach().numpy()
+#print(arr[0,0,1])
+#print(arr[0,0,11])
+#print(np.sum(arr))
 
 
-
+f.close()
 
 #a=torch.from_numpy(np.zeros((300,70,70)).astype(bool)).to(cuda0)
 #b=torch.from_numpy(np.zeros((70,80,90)).astype(bool)).to(cuda0)
